@@ -1,0 +1,15 @@
+[package]
+name = "lnxdrive-telemetry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Opt-in telemetry agent for LNXDrive"
+
+[dependencies]
+tokio.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+prometheus.workspace = true
+tracing.workspace = true

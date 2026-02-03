@@ -1,0 +1,27 @@
+[package]
+name = "lnxdrive-daemon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "LNXDrive background synchronization daemon"
+
+[[bin]]
+name = "lnxdrived"
+path = "src/main.rs"
+
+[dependencies]
+lnxdrive-core.workspace = true
+lnxdrive-ipc.workspace = true
+lnxdrive-sync.workspace = true
+lnxdrive-fuse.workspace = true
+lnxdrive-graph.workspace = true
+lnxdrive-cache.workspace = true
+lnxdrive-audit.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "lnxdrive-fuse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "FUSE filesystem for LNXDrive Files-on-Demand"
+
+[dependencies]
+fuser.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

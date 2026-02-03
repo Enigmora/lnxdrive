@@ -1,0 +1,13 @@
+[package]
+name = "lnxdrive-conflict"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Conflict detection and resolution for LNXDrive"
+
+[dependencies]
+lnxdrive-core.workspace = true
+serde.workspace = true
+tracing.workspace = true
+thiserror.workspace = true

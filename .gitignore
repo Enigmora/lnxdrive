@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+*.env
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+logs/
+
+# Coverage
+*.gcda
+*.gcno
+coverage/
+tarpaulin-report.html
+
+# Test artifacts
+test-output/

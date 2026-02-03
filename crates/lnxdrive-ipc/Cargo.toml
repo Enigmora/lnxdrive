@@ -1,0 +1,13 @@
+[package]
+name = "lnxdrive-ipc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "D-Bus IPC library for LNXDrive clients"
+
+[dependencies]
+zbus.workspace = true
+serde.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
