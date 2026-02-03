@@ -1,38 +1,97 @@
-# Rust
-/target/
-**/*.rs.bk
-Cargo.lock
+# Enigmora Chronicle Framework - .gitignore
 
-# IDE
+# =============================================================================
+# Operating System Files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
+
+# =============================================================================
+# Editor and IDE Files
+# =============================================================================
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains IDEs
 .idea/
-.vscode/
+
+# Vim
 *.swp
 *.swo
 *~
 
-# Environment
+# Emacs
+\#*\#
+.\#*
+
+# =============================================================================
+# Node.js (for markdownlint and other tools)
+# =============================================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# =============================================================================
+# Temporary Files
+# =============================================================================
+
+*.tmp
+*.temp
+*.log
+*.bak
+
+# =============================================================================
+# Enigmora Chronicle Framework Specific
+# =============================================================================
+
+# Temporary validation files
+.markdownlint.json
+
+# Generated index (if using auto-generation)
+# Uncomment if you want to ignore the auto-generated index:
+# .chronicle/INDEX.md
+
+# =============================================================================
+# Security - Never commit these
+# =============================================================================
+
+# Environment files
 .env
 .env.local
+.env.*.local
 *.env
 
-# Build artifacts
-*.so
-*.dylib
-*.dll
+# Credentials
+credentials.json
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
 
-# Database
-*.db
-*.sqlite
-
-# Logs
-*.log
-logs/
-
-# Coverage
-*.gcda
-*.gcno
-coverage/
-tarpaulin-report.html
-
-# Test artifacts
-test-output/
+# API keys
+api_keys.txt
+api_keys.json
+nul
