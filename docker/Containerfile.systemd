@@ -35,7 +35,9 @@ RUN systemctl mask \
 RUN useradd -m -s /bin/bash testuser
 
 # Enable lingering so systemd --user starts at boot for testuser
-RUN loginctl enable-linger testuser
+# Note: loginctl requires systemd running as PID 1, which is not available
+# during build. Manually create the linger marker file instead.
+RUN mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/testuser
 
 # Create LNXDrive directories for testuser
 RUN mkdir -p /home/testuser/.config/lnxdrive \
@@ -71,7 +73,12 @@ EOF
 RUN chown testuser:testuser /home/testuser/.config/systemd/user/lnxdrive.service
 
 # Enable the service for testuser's systemd --user session
-RUN su - testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u testuser) systemctl --user enable lnxdrive.service" 2>/dev/null || true
+# Note: systemctl --user requires a running systemd user session, which is not
+# available during build. Create the WantedBy symlink manually instead.
+RUN mkdir -p /home/testuser/.config/systemd/user/default.target.wants \
+    && ln -sf /home/testuser/.config/systemd/user/lnxdrive.service \
+              /home/testuser/.config/systemd/user/default.target.wants/lnxdrive.service \
+    && chown -R testuser:testuser /home/testuser/.config/systemd
 
 # Copy functional test script
 COPY scripts/test-daemon-functional.sh /usr/local/bin/test-daemon-functional.sh
