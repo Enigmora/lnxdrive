@@ -15,8 +15,9 @@ use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
 use lnxdrive_core::ports::cloud_provider::Tokens;
 use oauth2::{
-    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, EndpointNotSet,
+    EndpointSet, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, RefreshToken, Scope,
+    TokenResponse, TokenUrl,
 };
 // serde is used by Tokens (from lnxdrive-core) for JSON serialization in KeyringTokenStorage
 use tracing::{debug, info, warn};
@@ -140,7 +141,7 @@ impl KeyringTokenStorage {
         let entry = keyring::Entry::new(KEYRING_SERVICE, username)
             .context("Failed to create keyring entry")?;
 
-        match entry.delete_password() {
+        match entry.delete_credential() {
             Ok(()) => {
                 info!("Cleared tokens from keyring for user: {}", username);
                 Ok(())
@@ -163,22 +164,19 @@ impl KeyringTokenStorage {
 /// Handles generating authorization URLs with PKCE challenges,
 /// exchanging authorization codes for tokens, and refreshing tokens.
 pub struct PKCEFlow {
-    client: BasicClient,
+    client: BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>,
     scopes: Vec<String>,
 }
 
 impl PKCEFlow {
     /// Creates a new PKCEFlow with the given configuration
     pub fn new(config: &OAuth2Config) -> Result<Self> {
-        let client = BasicClient::new(
-            ClientId::new(config.app_id.clone()),
-            None, // No client secret for PKCE
-            AuthUrl::new(AUTH_URL.to_string()).context("Invalid authorization URL")?,
-            Some(TokenUrl::new(TOKEN_URL.to_string()).context("Invalid token URL")?),
-        )
-        .set_redirect_uri(
-            RedirectUrl::new(config.redirect_uri.clone()).context("Invalid redirect URI")?,
-        );
+        let client = BasicClient::new(ClientId::new(config.app_id.clone()))
+            .set_auth_uri(AuthUrl::new(AUTH_URL.to_string()).context("Invalid authorization URL")?)
+            .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).context("Invalid token URL")?)
+            .set_redirect_uri(
+                RedirectUrl::new(config.redirect_uri.clone()).context("Invalid redirect URI")?,
+            );
 
         Ok(Self {
             client,
@@ -221,11 +219,12 @@ impl PKCEFlow {
     ) -> Result<Tokens> {
         info!("Exchanging authorization code for tokens");
 
+        let http_client = reqwest::Client::new();
         let token_result = self
             .client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http_client)
             .await
             .context("Failed to exchange authorization code")?;
 
@@ -254,10 +253,11 @@ impl PKCEFlow {
     pub async fn refresh_token(&self, refresh_token: &str) -> Result<Tokens> {
         info!("Refreshing access token");
 
+        let http_client = reqwest::Client::new();
         let token_result = self
             .client
             .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
-            .request_async(oauth2::reqwest::async_http_client)
+            .request_async(&http_client)
             .await
             .context("Failed to refresh token")?;
 
