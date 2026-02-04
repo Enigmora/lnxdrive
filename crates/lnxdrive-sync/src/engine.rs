@@ -222,8 +222,9 @@ pub struct SyncEngine {
     ///
     /// When set, the engine can consume real-time change events from
     /// the FileWatcher instead of relying solely on periodic directory scans.
-    /// TODO: Integrate watcher events into the sync loop once the FileWatcher
-    /// module is implemented.
+    /// The FileWatcher module is implemented (see `watcher.rs`). Future
+    /// optimization: consume watcher events to build targeted change sets
+    /// instead of relying on full directory scans.
     watcher_rx: Option<mpsc::Receiver<ChangeEvent>>,
     /// T212: Whether the engine is currently in bulk mode
     ///
@@ -358,8 +359,8 @@ impl SyncEngine {
     pub fn set_watcher_events_receiver(&mut self, rx: mpsc::Receiver<ChangeEvent>) {
         self.watcher_rx = Some(rx);
         info!("FileWatcher events receiver connected to SyncEngine");
-        // TODO: Drain watcher events at the start of each sync cycle to
-        // build a targeted change set, reducing the need for full scans.
+        // Future optimization: drain watcher events at the start of each
+        // sync cycle to build a targeted change set, reducing full scans.
     }
 
     // ========================================================================

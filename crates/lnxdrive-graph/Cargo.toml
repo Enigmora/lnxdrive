@@ -24,3 +24,8 @@ webbrowser.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
 url = "2.5"
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile.workspace = true

@@ -83,6 +83,10 @@ anyhow = "1.0"
 # CLI
 clap = { version = "4.4", features = ["derive"] }
 
+# Testing
+wiremock = "0.6"
+tempfile = "3.10"
+
 # Workspace crates
 lnxdrive-core = { path = "crates/lnxdrive-core" }
 lnxdrive-daemon = { path = "crates/lnxdrive-daemon" }

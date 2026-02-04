@@ -245,7 +245,7 @@ impl ILocalFileSystem for LocalFileSystemAdapter {
         Ok(())
     }
 
-    // watch - stub returning a no-op handle (Phase 6)
+    // watch - no-op stub; real filesystem watching is handled by FileWatcher (watcher.rs)
     #[instrument(skip(self, path), fields(path = %path))]
     async fn watch(&self, path: &SyncPath) -> anyhow::Result<WatchHandle> {
         debug!("watch requested (returning no-op handle)");

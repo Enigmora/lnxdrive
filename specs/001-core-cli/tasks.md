@@ -28,7 +28,7 @@ crates/
 
 ---
 
-## Phase 1: Setup (Shared Infrastructure)
+## Stage 1: Setup (Shared Infrastructure)
 
 **Purpose**: Project initialization and workspace structure
 
@@ -46,13 +46,13 @@ crates/
 - [x] T012 Create config/default-config.yaml with all configuration sections from data-model.md (sync, rate_limiting, large_files, conflicts, logging, auth)
 - [x] T013 [P] Create config/lnxdrive.service systemd user service unit file with Type=simple, RestartOnFailure, WantedBy=default.target
 - [x] T014 Create .github/workflows/ci.yml with cargo build, cargo test, cargo clippy, cargo fmt --check, cargo audit
-- [ ] T015 [P] Create tests/integration/graph_mock/Cargo.toml for wiremock MS Graph mock server
+- [x] T015 [P] Create tests/integration/graph_mock/Cargo.toml for wiremock MS Graph mock server
 
 **Checkpoint**: Workspace compiles with `cargo build --workspace`
 
 ---
 
-## Phase 2: Foundational (Blocking Prerequisites)
+## Stage 2: Foundational (Blocking Prerequisites)
 
 **Purpose**: Core infrastructure that MUST be complete before ANY user story
 
@@ -179,7 +179,7 @@ crates/
 
 ---
 
-## Phase 3: User Story 1 - Primera Autenticacion con OneDrive (Priority: P1) 🎯 MVP
+## Stage 3: User Story 1 - Primera Autenticacion con OneDrive (Priority: P1) 🎯 MVP
 
 **Goal**: User can authenticate with OneDrive via OAuth2 PKCE and store tokens securely
 
@@ -219,7 +219,7 @@ crates/
 
 ---
 
-## Phase 4: User Story 2 - Sincronizacion Inicial de Archivos (Priority: P1) 🎯 MVP
+## Stage 4: User Story 2 - Sincronizacion Inicial de Archivos (Priority: P1) 🎯 MVP
 
 **Goal**: User can sync files bidirectionally between local folder and OneDrive
 
@@ -257,13 +257,13 @@ crates/
 - [x] T163 [US2] Implement sync command in crates/lnxdrive-cli/src/commands/sync.rs: initialize SyncEngine, call sync(), display progress, format results
 - [x] T164 [US2] Add progress display to sync command in crates/lnxdrive-cli/src/commands/sync.rs: show current file, progress bar, speed
 - [x] T165 [US2] Create crates/lnxdrive-sync/src/lib.rs exporting SyncEngine, LocalFileSystemAdapter
-- [ ] T166 [US2] Add sync integration test in tests/integration/test_sync.rs: mock Graph server, test upload/download flow
+- [x] T166 [US2] Add sync integration test in tests/integration/test_sync.rs: mock Graph server, test upload/download flow
 
 **Checkpoint**: User can run `lnxdrive sync`, see files downloaded/uploaded, verify bidirectional sync works
 
 ---
 
-## Phase 5: User Story 3 - Sincronizacion Delta Incremental (Priority: P2)
+## Stage 5: User Story 3 - Sincronizacion Delta Incremental (Priority: P2)
 
 **Goal**: System efficiently syncs only changed files using delta tokens
 
@@ -277,13 +277,13 @@ crates/
 - [x] T170 [US3] Implement full resync fallback in SyncEngine in crates/lnxdrive-sync/src/engine.rs: on 410 Gone, clear token, notify user, start fresh delta
 - [x] T171 [US3] Add delta efficiency metrics to SyncSession in crates/lnxdrive-core/src/domain/session.rs: items_checked vs items_synced ratio
 - [x] T172 [US3] Implement local change detection optimization in SyncEngine in crates/lnxdrive-sync/src/engine.rs: only check files modified since last_sync timestamp
-- [ ] T173 [US3] Add delta sync integration test in tests/integration/test_delta.rs: initial sync, modify one file, verify only one transfer
+- [x] T173 [US3] Add delta sync integration test in tests/integration/test_delta.rs: initial sync, modify one file, verify only one transfer
 
 **Checkpoint**: Incremental sync works efficiently, only changed files transfer
 
 ---
 
-## Phase 6: User Story 4 - Observacion de Cambios Locales en Tiempo Real (Priority: P2)
+## Stage 6: User Story 4 - Observacion de Cambios Locales en Tiempo Real (Priority: P2)
 
 **Goal**: System automatically detects local file changes and queues them for sync
 
@@ -311,7 +311,7 @@ crates/
 
 ---
 
-## Phase 7: User Story 5 - CLI para Estado y Diagnostico (Priority: P2)
+## Stage 7: User Story 5 - CLI para Estado y Diagnostico (Priority: P2)
 
 **Goal**: User can query sync status and get explanations via CLI
 
@@ -337,7 +337,7 @@ crates/
 
 ---
 
-## Phase 8: User Story 6 - Rate Limiting y Respeto de Cuotas (Priority: P3)
+## Stage 8: User Story 6 - Rate Limiting y Respeto de Cuotas (Priority: P3)
 
 **Goal**: System respects API rate limits and adapts to throttling
 
@@ -362,7 +362,7 @@ crates/
 
 ---
 
-## Phase 9: User Story 7 - Servicio Daemon Persistente (Priority: P3)
+## Stage 9: User Story 7 - Servicio Daemon Persistente (Priority: P3)
 
 **Goal**: Sync runs as background service, auto-starts on login
 
@@ -394,7 +394,7 @@ crates/
 
 ---
 
-## Phase 10: Additional CLI Commands
+## Stage 10: Additional CLI Commands
 
 **Purpose**: Complete remaining CLI commands for config and conflicts
 
@@ -414,7 +414,7 @@ crates/
 
 ---
 
-## Phase 11: Polish & Cross-Cutting Concerns
+## Stage 11: Polish & Cross-Cutting Concerns
 
 **Purpose**: Improvements that affect multiple user stories
 
@@ -436,35 +436,35 @@ crates/
 
 ## Dependencies & Execution Order
 
-### Phase Dependencies
+### Stage Dependencies
 
 ```
-Phase 1: Setup
+Stage 1: Setup
     ↓
-Phase 2: Foundational (BLOCKS all user stories)
+Stage 2: Foundational (BLOCKS all user stories)
     ↓
-    ├─→ Phase 3: US1 - Auth (P1) 🎯
+    ├─→ Stage 3: US1 - Auth (P1) 🎯
     │       ↓
-    ├─→ Phase 4: US2 - Initial Sync (P1, depends on US1 for auth)
+    ├─→ Stage 4: US2 - Initial Sync (P1, depends on US1 for auth)
     │       ↓
-    ├─→ Phase 5: US3 - Delta Sync (P2, builds on US2)
+    ├─→ Stage 5: US3 - Delta Sync (P2, builds on US2)
     │       ↓
-    ├─→ Phase 6: US4 - File Watching (P2, can parallel with US3)
+    ├─→ Stage 6: US4 - File Watching (P2, can parallel with US3)
     │       ↓
-    ├─→ Phase 7: US5 - Status/Explain (P2, can parallel with US3/US4)
+    ├─→ Stage 7: US5 - Status/Explain (P2, can parallel with US3/US4)
     │       ↓
-    ├─→ Phase 8: US6 - Rate Limiting (P3, can parallel with US5)
+    ├─→ Stage 8: US6 - Rate Limiting (P3, can parallel with US5)
     │       ↓
-    ├─→ Phase 9: US7 - Daemon (P3, depends on US4 for watcher)
+    ├─→ Stage 9: US7 - Daemon (P3, depends on US4 for watcher)
     │       ↓
-    └─→ Phase 10: Additional CLI
+    └─→ Stage 10: Additional CLI
             ↓
-        Phase 11: Polish
+        Stage 11: Polish
 ```
 
 ### User Story Dependencies
 
-- **US1 (Auth)**: Foundation only - can start immediately after Phase 2
+- **US1 (Auth)**: Foundation only - can start immediately after Stage 2
 - **US2 (Initial Sync)**: Requires US1 (needs authentication)
 - **US3 (Delta Sync)**: Requires US2 (builds on sync infrastructure)
 - **US4 (File Watching)**: Requires US2 (needs sync engine)
@@ -474,19 +474,19 @@ Phase 2: Foundational (BLOCKS all user stories)
 
 ### Parallel Opportunities
 
-**Phase 1 (all [P] tasks can run in parallel):**
+**Stage 1 (all [P] tasks can run in parallel):**
 ```
 T002-T008 - All crate Cargo.toml files
 T009-T011 - Tooling config files
 T013-T015 - CI and test infrastructure
 ```
 
-**Phase 2 Newtypes (all [P]):**
+**Stage 2 Newtypes (all [P]):**
 ```
 T017-T023 - All newtypes can be implemented in parallel
 ```
 
-**Phase 2 Entities (partial parallel):**
+**Stage 2 Entities (partial parallel):**
 ```
 T025-T030 - SyncItem
 T031-T033 - Account         } Can run in parallel
@@ -495,7 +495,7 @@ T038-T041 - AuditEntry      }
 T042-T046 - Conflict        }
 ```
 
-**Phase 2 Unit Tests (all [P]):**
+**Stage 2 Unit Tests (all [P]):**
 ```
 T077-T080 - All unit tests for domain entities
 ```
@@ -506,10 +506,10 @@ T077-T080 - All unit tests for domain entities
 
 ### MVP First (User Stories 1-2 Only)
 
-1. Complete Phase 1: Setup
-2. Complete Phase 2: Foundational (CRITICAL - blocks all stories)
-3. Complete Phase 3: User Story 1 (Auth)
-4. Complete Phase 4: User Story 2 (Initial Sync)
+1. Complete Stage 1: Setup
+2. Complete Stage 2: Foundational (CRITICAL - blocks all stories)
+3. Complete Stage 3: User Story 1 (Auth)
+4. Complete Stage 4: User Story 2 (Initial Sync)
 5. **STOP and VALIDATE**: Test auth + sync works end-to-end
 6. Deploy/demo if ready
 
@@ -528,7 +528,7 @@ T077-T080 - All unit tests for domain entities
 
 ## Summary
 
-| Phase | Tasks | User Story | Priority |
+| Stage | Tasks | User Story | Priority |
 |-------|-------|------------|----------|
 | 1 | T001-T015 (15) | Setup | - |
 | 2 | T016-T108 (93) | Foundational | - |
@@ -544,8 +544,8 @@ T077-T080 - All unit tests for domain entities
 
 **Total Tasks**: 254
 
-**MVP Scope** (Phases 1-4): 166 tasks for auth + bidirectional sync
-**Full Scope** (All Phases): 254 tasks for complete feature
+**MVP Scope** (Stages 1-4): 166 tasks for auth + bidirectional sync
+**Full Scope** (All Stages): 254 tasks for complete feature
 
 ---
 
