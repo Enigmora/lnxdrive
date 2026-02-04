@@ -1,0 +1,21 @@
+[Unit]
+Description=LNXDrive OneDrive Sync Service
+Documentation=https://github.com/Enigmora/lnxdrive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/lnxdrived
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/OneDrive %h/.local/share/lnxdrive %h/.config/lnxdrive
+
+[Install]
+WantedBy=default.target

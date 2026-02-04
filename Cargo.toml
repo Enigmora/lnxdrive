@@ -31,6 +31,28 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 
+# Common utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+async-trait = "0.1"
+
+# Secure credential storage
+keyring = "2.3"
+
+# File watching
+notify = { version = "6.1", default-features = false, features = ["macos_kqueue"] }
+
+# Browser launching (for OAuth)
+webbrowser = "0.8"
+
+# HTTP server (for OAuth callback)
+hyper = { version = "1.1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+
+# Signal handling
+tokio-util = { version = "0.7", features = ["rt"] }
+
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
 
@@ -63,6 +85,8 @@ clap = { version = "4.4", features = ["derive"] }
 
 # Workspace crates
 lnxdrive-core = { path = "crates/lnxdrive-core" }
+lnxdrive-daemon = { path = "crates/lnxdrive-daemon" }
+lnxdrive-cli = { path = "crates/lnxdrive-cli" }
 lnxdrive-ipc = { path = "crates/lnxdrive-ipc" }
 lnxdrive-fuse = { path = "crates/lnxdrive-fuse" }
 lnxdrive-sync = { path = "crates/lnxdrive-sync" }

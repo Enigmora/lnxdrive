@@ -7,7 +7,11 @@ license.workspace = true
 description = "D-Bus IPC library for LNXDrive clients"
 
 [dependencies]
+lnxdrive-core.workspace = true
 zbus.workspace = true
-serde.workspace = true
 tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
