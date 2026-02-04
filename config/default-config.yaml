@@ -1,0 +1,30 @@
+# LNXDrive Default Configuration
+
+sync:
+  root: ~/OneDrive
+  poll_interval: 30  # seconds between remote checks
+  debounce_delay: 2  # seconds to wait after local change
+
+rate_limiting:
+  delta_requests_per_minute: 10
+  upload_concurrent: 4
+  upload_requests_per_minute: 60
+  download_concurrent: 8
+  metadata_requests_per_minute: 100
+
+large_files:
+  threshold_mb: 100
+  chunk_size_mb: 10
+  max_concurrent_large: 1
+
+conflicts:
+  default_strategy: manual  # manual | keep_local | keep_remote | keep_both
+
+logging:
+  level: info  # trace | debug | info | warn | error
+  file: ~/.local/share/lnxdrive/lnxdrive.log
+  max_size_mb: 50
+  max_files: 5
+
+auth:
+  app_id: null  # Azure App ID (set via lnxdrive auth login --app-id)

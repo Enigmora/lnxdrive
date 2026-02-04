@@ -1,0 +1,210 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+
+<!--
+  D-Bus Interface Definition: LNXDrive Sync Service
+
+  Service Name: com.enigmora.LNXDrive
+  Object Path: /com/enigmora/LNXDrive
+
+  This interface exposes the sync controller to UI adapters (GNOME, KDE, etc.)
+-->
+
+<node name="/com/enigmora/LNXDrive">
+
+  <!-- Main sync controller interface -->
+  <interface name="com.enigmora.LNXDrive.SyncController">
+
+    <!-- Methods -->
+
+    <!-- Start a sync session -->
+    <method name="StartSync">
+      <arg name="session_id" type="s" direction="out"/>
+    </method>
+
+    <!-- Pause active sync -->
+    <method name="PauseSync">
+      <arg name="success" type="b" direction="out"/>
+    </method>
+
+    <!-- Resume paused sync -->
+    <method name="ResumeSync">
+      <arg name="success" type="b" direction="out"/>
+    </method>
+
+    <!-- Get current sync status (returns JSON) -->
+    <method name="GetStatus">
+      <arg name="status_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Get item state by path -->
+    <method name="GetItemState">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="state_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Explain why an item is in its current state -->
+    <method name="ExplainItem">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="explanation" type="s" direction="out"/>
+    </method>
+
+    <!-- Get audit log entries (returns JSON array) -->
+    <method name="GetAuditLog">
+      <arg name="since_timestamp" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="entries_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Properties -->
+
+    <!-- Current sync state: Idle, Syncing, Paused, Error -->
+    <property name="State" type="s" access="read"/>
+
+    <!-- Number of items pending sync -->
+    <property name="PendingCount" type="u" access="read"/>
+
+    <!-- Number of items in error state -->
+    <property name="ErrorCount" type="u" access="read"/>
+
+    <!-- Number of unresolved conflicts -->
+    <property name="ConflictCount" type="u" access="read"/>
+
+    <!-- Last sync timestamp (ISO 8601) -->
+    <property name="LastSync" type="s" access="read"/>
+
+    <!-- Is currently online/connected -->
+    <property name="IsOnline" type="b" access="read"/>
+
+    <!-- Signals -->
+
+    <!-- Emitted when sync state changes -->
+    <signal name="StateChanged">
+      <arg name="old_state" type="s"/>
+      <arg name="new_state" type="s"/>
+    </signal>
+
+    <!-- Emitted when an item state changes -->
+    <signal name="ItemStateChanged">
+      <arg name="path" type="s"/>
+      <arg name="old_state" type="s"/>
+      <arg name="new_state" type="s"/>
+    </signal>
+
+    <!-- Emitted for sync progress updates -->
+    <signal name="SyncProgress">
+      <arg name="session_id" type="s"/>
+      <arg name="processed" type="u"/>
+      <arg name="total" type="u"/>
+      <arg name="current_item" type="s"/>
+    </signal>
+
+    <!-- Emitted when a new conflict is detected -->
+    <signal name="ConflictDetected">
+      <arg name="conflict_id" type="s"/>
+      <arg name="path" type="s"/>
+    </signal>
+
+    <!-- Emitted on sync errors -->
+    <signal name="Error">
+      <arg name="error_code" type="s"/>
+      <arg name="message" type="s"/>
+      <arg name="item_path" type="s"/>
+    </signal>
+
+  </interface>
+
+  <!-- Account management interface -->
+  <interface name="com.enigmora.LNXDrive.Account">
+
+    <!-- Methods -->
+
+    <!-- Get account info (returns JSON) -->
+    <method name="GetInfo">
+      <arg name="info_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Check authentication status -->
+    <method name="CheckAuth">
+      <arg name="is_authenticated" type="b" direction="out"/>
+      <arg name="needs_refresh" type="b" direction="out"/>
+    </method>
+
+    <!-- Properties -->
+
+    <!-- Account email -->
+    <property name="Email" type="s" access="read"/>
+
+    <!-- Display name -->
+    <property name="DisplayName" type="s" access="read"/>
+
+    <!-- Quota used in bytes -->
+    <property name="QuotaUsed" type="t" access="read"/>
+
+    <!-- Quota total in bytes -->
+    <property name="QuotaTotal" type="t" access="read"/>
+
+    <!-- Sync root path -->
+    <property name="SyncRoot" type="s" access="read"/>
+
+    <!-- Account state: Active, TokenExpired, Suspended, Error -->
+    <property name="State" type="s" access="read"/>
+
+    <!-- Signals -->
+
+    <!-- Emitted when quota changes -->
+    <signal name="QuotaChanged">
+      <arg name="used" type="t"/>
+      <arg name="total" type="t"/>
+    </signal>
+
+    <!-- Emitted when auth state changes -->
+    <signal name="AuthStateChanged">
+      <arg name="is_authenticated" type="b"/>
+      <arg name="reason" type="s"/>
+    </signal>
+
+  </interface>
+
+  <!-- Conflict resolution interface -->
+  <interface name="com.enigmora.LNXDrive.Conflicts">
+
+    <!-- Methods -->
+
+    <!-- List all unresolved conflicts (returns JSON array) -->
+    <method name="List">
+      <arg name="conflicts_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Get conflict details -->
+    <method name="GetDetails">
+      <arg name="conflict_id" type="s" direction="in"/>
+      <arg name="details_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Preview resolution (returns diff info) -->
+    <method name="Preview">
+      <arg name="conflict_id" type="s" direction="in"/>
+      <arg name="strategy" type="s" direction="in"/>
+      <arg name="preview_json" type="s" direction="out"/>
+    </method>
+
+    <!-- Resolve a conflict -->
+    <method name="Resolve">
+      <arg name="conflict_id" type="s" direction="in"/>
+      <arg name="strategy" type="s" direction="in"/>
+      <arg name="success" type="b" direction="out"/>
+    </method>
+
+    <!-- Signals -->
+
+    <!-- Emitted when a conflict is resolved -->
+    <signal name="Resolved">
+      <arg name="conflict_id" type="s"/>
+      <arg name="strategy" type="s"/>
+    </signal>
+
+  </interface>
+
+</node>

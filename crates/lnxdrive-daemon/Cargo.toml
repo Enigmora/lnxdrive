@@ -12,16 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 lnxdrive-core.workspace = true
-lnxdrive-ipc.workspace = true
 lnxdrive-sync.workspace = true
-lnxdrive-fuse.workspace = true
-lnxdrive-graph.workspace = true
+lnxdrive-ipc.workspace = true
 lnxdrive-cache.workspace = true
-lnxdrive-audit.workspace = true
+lnxdrive-graph.workspace = true
 tokio.workspace = true
-zbus.workspace = true
+tokio-util.workspace = true
+anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-serde.workspace = true
-serde_yaml.workspace = true
-anyhow.workspace = true
+serde_json.workspace = true
+dirs = "5.0"

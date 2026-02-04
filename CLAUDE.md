@@ -398,3 +398,10 @@ lnxdrive-guide/.devtrail/02-design/risk-analysis/TRACE-risks-mitigations.md
 
 *LNXDrive Guide v1.0 — [Enigmora](https://enigmora.com)*
 
+
+## Active Technologies
+- Rust 1.75+ (MSRV) + tokio (async runtime), reqwest (HTTP), oauth2-rs (OAuth2 PKCE), zbus (D-Bus), sqlx (SQLite), clap (CLI), serde (serialization), thiserror/anyhow (errors) (001-core-cli)
+- SQLite 3.35+ (estado de sincronizacion, audit log) (001-core-cli)
+
+## Recent Changes
+- 001-core-cli: Added Rust 1.75+ (MSRV) + tokio (async runtime), reqwest (HTTP), oauth2-rs (OAuth2 PKCE), zbus (D-Bus), sqlx (SQLite), clap (CLI), serde (serialization), thiserror/anyhow (errors)
