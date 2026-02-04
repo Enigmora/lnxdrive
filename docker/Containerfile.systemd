@@ -1,0 +1,81 @@
+# Containerfile.systemd - LNXDrive daemon testing with systemd
+#
+# Runs a Fedora 41 container with full systemd init, D-Bus session bus,
+# and a non-root user to test the daemon lifecycle:
+#   - Service start/stop/restart
+#   - D-Bus name registration
+#   - Graceful shutdown
+#   - Journal logging
+#
+# Usage:
+#   podman build -f docker/Containerfile.systemd -t lnxdrive-systemd .
+#   podman run -d --name lnxdrive-test --systemd=always localhost/lnxdrive-systemd
+
+FROM fedora:41
+
+# Install systemd, D-Bus, and runtime dependencies
+RUN dnf install -y \
+        systemd \
+        systemd-libs \
+        dbus-daemon \
+        sqlite \
+        procps-ng \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+# Mask unnecessary systemd units to speed up boot
+RUN systemctl mask \
+        systemd-remount-fs.service \
+        systemd-firstboot.service \
+        systemd-machine-id-commit.service \
+        getty@.service \
+        serial-getty@.service
+
+# Create test user with home directory
+RUN useradd -m -s /bin/bash testuser
+
+# Enable lingering so systemd --user starts at boot for testuser
+RUN loginctl enable-linger testuser
+
+# Create LNXDrive directories for testuser
+RUN mkdir -p /home/testuser/.config/lnxdrive \
+             /home/testuser/.local/share/lnxdrive \
+             /home/testuser/.config/systemd/user \
+             /home/testuser/OneDrive \
+    && chown -R testuser:testuser /home/testuser
+
+# Copy compiled binaries (built on host with: cargo build --release)
+COPY target/release/lnxdrived /usr/local/bin/lnxdrived
+COPY target/release/lnxdrive  /usr/local/bin/lnxdrive
+
+# Copy default configuration
+COPY config/default-config.yaml /home/testuser/.config/lnxdrive/config.yaml
+RUN chown testuser:testuser /home/testuser/.config/lnxdrive/config.yaml
+
+# Create systemd user service with paths adjusted for the container
+RUN cat > /home/testuser/.config/systemd/user/lnxdrive.service <<'EOF'
+[Unit]
+Description=LNXDrive OneDrive Sync Service
+After=dbus.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/lnxdrived
+Restart=on-failure
+RestartSec=5
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
+EOF
+RUN chown testuser:testuser /home/testuser/.config/systemd/user/lnxdrive.service
+
+# Enable the service for testuser's systemd --user session
+RUN su - testuser -c "XDG_RUNTIME_DIR=/run/user/$(id -u testuser) systemctl --user enable lnxdrive.service" 2>/dev/null || true
+
+# Copy functional test script
+COPY scripts/test-daemon-functional.sh /usr/local/bin/test-daemon-functional.sh
+RUN chmod +x /usr/local/bin/test-daemon-functional.sh
+
+# systemd as PID 1
+CMD ["/sbin/init"]
