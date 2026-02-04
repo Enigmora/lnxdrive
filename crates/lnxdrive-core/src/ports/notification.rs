@@ -22,23 +22,18 @@ use serde::{Deserialize, Serialize};
 /// Priority level for a notification
 ///
 /// Maps to urgency levels in notification systems (e.g., libnotify urgency).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationPriority {
     /// Low priority, may not be shown immediately
     Low,
     /// Normal priority, shown in the notification area
+    #[default]
     Normal,
     /// High priority, may trigger a banner or sound
     High,
     /// Critical priority, persists until acknowledged
     Critical,
-}
-
-impl Default for NotificationPriority {
-    fn default() -> Self {
-        NotificationPriority::Normal
-    }
 }
 
 impl std::fmt::Display for NotificationPriority {

@@ -982,7 +982,7 @@ impl SyncEngine {
         let mut changes = Vec::new();
 
         // Walk the sync root directory
-        self.walk_directory(sync_root, sync_root, &mut changes, last_sync)
+        self.walk_directory(sync_root, &mut changes, last_sync)
             .await?;
 
         // Check for deleted items: items in the state repo whose local file is gone
@@ -1027,7 +1027,6 @@ impl SyncEngine {
     fn walk_directory<'a>(
         &'a self,
         dir: &'a SyncPath,
-        sync_root: &'a SyncPath,
         changes: &'a mut Vec<LocalChange>,
         last_sync: Option<DateTime<Utc>>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
@@ -1062,8 +1061,7 @@ impl SyncEngine {
                     }
 
                     // Recurse into subdirectory
-                    self.walk_directory(&sync_path, sync_root, changes, last_sync)
-                        .await?;
+                    self.walk_directory(&sync_path, changes, last_sync).await?;
                 } else if metadata.is_file() {
                     // T172: Skip files not modified since last_sync for existing items.
                     // New files (not tracked) always need to be checked regardless
@@ -1553,36 +1551,21 @@ mod tests {
         assert_eq!(BULK_MODE_BATCH_DELAY_MS, 2000);
     }
 
-    #[test]
-    fn test_bulk_mode_max_concurrent_normal() {
-        // In normal mode, max concurrent = 8
-        // We can only test this if we have a SyncEngine, which needs mocks.
-        // Instead, test the constant relationships.
-        assert!(
-            BULK_MODE_MAX_CONCURRENT < 8,
-            "Bulk mode should reduce concurrency"
-        );
-    }
-
-    #[test]
-    fn test_bulk_mode_batch_delay_positive() {
-        assert!(
-            BULK_MODE_BATCH_DELAY_MS > 0,
-            "Batch delay should be positive in bulk mode"
-        );
-    }
-
-    #[test]
-    fn test_bulk_mode_threshold_reasonable() {
-        // Threshold should be large enough to avoid false positives
-        assert!(
-            BULK_MODE_THRESHOLD >= 100,
-            "Threshold should be at least 100"
-        );
-        // But not so large that initial syncs aren't detected
-        assert!(
-            BULK_MODE_THRESHOLD <= 10000,
-            "Threshold should be at most 10000"
-        );
-    }
+    // Constant assertions validated at compile time
+    const _: () = assert!(
+        BULK_MODE_MAX_CONCURRENT < 8,
+        "Bulk mode should reduce concurrency"
+    );
+    const _: () = assert!(
+        BULK_MODE_BATCH_DELAY_MS > 0,
+        "Batch delay should be positive"
+    );
+    const _: () = assert!(
+        BULK_MODE_THRESHOLD >= 100,
+        "Threshold should be at least 100"
+    );
+    const _: () = assert!(
+        BULK_MODE_THRESHOLD <= 10000,
+        "Threshold should be at most 10000"
+    );
 }

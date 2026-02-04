@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 // ---------------------------------------------------------------------------
 
 /// Top-level configuration for LNXDrive.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     pub sync: SyncConfig,
     pub rate_limiting: RateLimitingConfig,
@@ -74,7 +74,7 @@ pub struct LoggingConfig {
 }
 
 /// Authentication / OAuth settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Azure AD Application (client) ID. `None` until the user runs `lnxdrive auth login`.
     pub app_id: Option<String>,
@@ -112,18 +112,8 @@ impl Config {
 // T101: Config::default()
 // ---------------------------------------------------------------------------
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            sync: SyncConfig::default(),
-            rate_limiting: RateLimitingConfig::default(),
-            large_files: LargeFilesConfig::default(),
-            conflicts: ConflictsConfig::default(),
-            logging: LoggingConfig::default(),
-            auth: AuthConfig::default(),
-        }
-    }
-}
+// Config derives Default because all its fields implement Default.
+// (clippy::derivable_impls)
 
 impl Default for SyncConfig {
     fn default() -> Self {
@@ -181,11 +171,8 @@ impl Default for LoggingConfig {
     }
 }
 
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self { app_id: None }
-    }
-}
+// AuthConfig derives Default (Option<String> defaults to None).
+// (clippy::derivable_impls)
 
 // ---------------------------------------------------------------------------
 // T102: Config::validate()

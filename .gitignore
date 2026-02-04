@@ -10,7 +10,7 @@ release/
 *.rlib
 *.rmeta
 **/*.rs.bk
-Cargo.lock
+# Note: Cargo.lock is committed for binary crates (lnxdrive, lnxdrived)
 
 # Profiling
 *.prof*

@@ -5,7 +5,7 @@
 
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -391,7 +391,7 @@ impl SyncPath {
     }
 
     /// Normalize a path by resolving . and .. components
-    fn normalize_path(path: &PathBuf) -> Result<PathBuf, DomainError> {
+    fn normalize_path(path: &Path) -> Result<PathBuf, DomainError> {
         use std::path::Component;
 
         let mut normalized = PathBuf::new();

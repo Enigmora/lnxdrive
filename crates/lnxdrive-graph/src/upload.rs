@@ -395,7 +395,7 @@ pub async fn upload_large(
         "Starting large file upload: {} ({} bytes, {} chunks)",
         name,
         total,
-        (total + CHUNK_SIZE as u64 - 1) / CHUNK_SIZE as u64
+        total.div_ceil(CHUNK_SIZE as u64)
     );
 
     // Step 1: Create upload session
