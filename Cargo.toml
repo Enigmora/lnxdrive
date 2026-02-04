@@ -37,7 +37,7 @@ chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 
 # Secure credential storage
-keyring = "2.3"
+keyring = { version = "3.6", features = ["sync-secret-service"] }
 
 # File watching
 notify = { version = "6.1", default-features = false, features = ["macos_kqueue"] }
@@ -60,13 +60,13 @@ sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
 zbus = "4.0"
 
 # HTTP client
-reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 
 # OAuth2
-oauth2 = "4.4"
+oauth2 = { version = "5.0", features = ["reqwest"] }
 
 # FUSE
-fuser = "0.14"
+fuser = "0.15"
 
 # Rate limiting
 governor = "0.6"
