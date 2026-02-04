@@ -683,7 +683,7 @@ impl IStateRepository for SqliteStateRepository {
         if let Some(ref path_prefix) = filter.path_prefix {
             sql.push_str(" AND local_path LIKE ?");
             // Use LIKE with escaped % for prefix matching
-            let prefix = format!("{}%", path_prefix.to_string());
+            let prefix = format!("{path_prefix}%");
             binds.push(prefix);
         }
 
