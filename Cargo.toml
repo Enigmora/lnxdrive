@@ -66,7 +66,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 oauth2 = { version = "5.0", features = ["reqwest"] }
 
 # FUSE
-fuser = "0.15"
+fuser = "0.16"
 
 # Rate limiting
 governor = "0.6"

@@ -17,4 +17,9 @@ ignore = [
     # Not exploitable in our usage (SQLite only, no untrusted >4GiB input).
     # Tracked for upgrade to sqlx 0.8.x.
     "RUSTSEC-2024-0363",
+
+    # paste v1.0.15 - Unmaintained (no longer maintained by dtolnay).
+    # Transitive dependency from sqlx-core v0.7.4; not directly used.
+    # sqlx 0.8.x still depends on paste. No action available from our side.
+    "RUSTSEC-2024-0436",
 ]
