@@ -399,6 +399,31 @@ lnxdrive-guide/.devtrail/02-design/risk-analysis/TRACE-risks-mitigations.md
 *LNXDrive Guide v1.0 — [Enigmora](https://enigmora.com)*
 
 
+# Context7 - Up-to-date Documentation Lookup
+
+> **Always consult Context7 for the most recent documentation** when researching or implementing with external APIs, libraries, or frameworks.
+
+This project has access to the **Context7 MCP server**, which provides real-time access to up-to-date documentation and code examples for any programming library or framework.
+
+### When to Use Context7
+
+| Situation | Action |
+|-----------|--------|
+| Implementing with a library (e.g., `tokio`, `reqwest`, `clap`, `serde`) | Query Context7 for current API usage and examples |
+| Integrating an external API (e.g., Microsoft Graph, OAuth2) | Query Context7 for latest endpoints and patterns |
+| Upgrading or adding a dependency | Query Context7 to verify current API surface and breaking changes |
+| Unsure about a library's current best practices | Query Context7 before defaulting to training data |
+
+### How to Use
+
+1. **Resolve the library ID** using `resolve-library-id` with the library name.
+2. **Query the documentation** using `query-docs` with the resolved ID and a specific question.
+
+> **Important:** Prefer Context7 documentation over training data when there may be discrepancies, especially for fast-moving libraries or recently released versions.
+
+---
+
+
 ## Active Technologies
 - Rust 1.75+ (MSRV) + tokio (async runtime), reqwest (HTTP), oauth2-rs (OAuth2 PKCE), zbus (D-Bus), sqlx (SQLite), clap (CLI), serde (serialization), thiserror/anyhow (errors) (001-core-cli)
 - SQLite 3.35+ (estado de sincronizacion, audit log) (001-core-cli)
