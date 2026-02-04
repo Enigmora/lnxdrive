@@ -46,7 +46,7 @@ crates/
 - [x] T012 Create config/default-config.yaml with all configuration sections from data-model.md (sync, rate_limiting, large_files, conflicts, logging, auth)
 - [x] T013 [P] Create config/lnxdrive.service systemd user service unit file with Type=simple, RestartOnFailure, WantedBy=default.target
 - [x] T014 Create .github/workflows/ci.yml with cargo build, cargo test, cargo clippy, cargo fmt --check, cargo audit
-- [ ] T015 [P] Create tests/integration/graph_mock/Cargo.toml for wiremock MS Graph mock server
+- [x] T015 [P] Create tests/integration/graph_mock/Cargo.toml for wiremock MS Graph mock server
 
 **Checkpoint**: Workspace compiles with `cargo build --workspace`
 
@@ -257,7 +257,7 @@ crates/
 - [x] T163 [US2] Implement sync command in crates/lnxdrive-cli/src/commands/sync.rs: initialize SyncEngine, call sync(), display progress, format results
 - [x] T164 [US2] Add progress display to sync command in crates/lnxdrive-cli/src/commands/sync.rs: show current file, progress bar, speed
 - [x] T165 [US2] Create crates/lnxdrive-sync/src/lib.rs exporting SyncEngine, LocalFileSystemAdapter
-- [ ] T166 [US2] Add sync integration test in tests/integration/test_sync.rs: mock Graph server, test upload/download flow
+- [x] T166 [US2] Add sync integration test in tests/integration/test_sync.rs: mock Graph server, test upload/download flow
 
 **Checkpoint**: User can run `lnxdrive sync`, see files downloaded/uploaded, verify bidirectional sync works
 
@@ -277,7 +277,7 @@ crates/
 - [x] T170 [US3] Implement full resync fallback in SyncEngine in crates/lnxdrive-sync/src/engine.rs: on 410 Gone, clear token, notify user, start fresh delta
 - [x] T171 [US3] Add delta efficiency metrics to SyncSession in crates/lnxdrive-core/src/domain/session.rs: items_checked vs items_synced ratio
 - [x] T172 [US3] Implement local change detection optimization in SyncEngine in crates/lnxdrive-sync/src/engine.rs: only check files modified since last_sync timestamp
-- [ ] T173 [US3] Add delta sync integration test in tests/integration/test_delta.rs: initial sync, modify one file, verify only one transfer
+- [x] T173 [US3] Add delta sync integration test in tests/integration/test_delta.rs: initial sync, modify one file, verify only one transfer
 
 **Checkpoint**: Incremental sync works efficiently, only changed files transfer
 

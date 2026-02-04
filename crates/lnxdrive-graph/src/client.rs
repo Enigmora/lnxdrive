@@ -120,7 +120,6 @@ impl GraphClient {
     /// # Arguments
     /// * `access_token` - A valid OAuth2 access token
     /// * `base_url` - Custom base URL for API requests
-    #[cfg(test)]
     pub fn with_base_url(access_token: impl Into<String>, base_url: impl Into<String>) -> Self {
         Self {
             client: Client::new(),
