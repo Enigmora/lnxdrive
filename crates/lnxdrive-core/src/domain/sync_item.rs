@@ -44,10 +44,11 @@ use super::newtypes::{FileHash, RemoteId, RemotePath, SyncPath, UniqueId};
 ///
 /// Represents the hydration state of a file, tracking whether content
 /// is available locally or only in the cloud.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemState {
     /// Metadata only, content exists only in cloud (placeholder file)
+    #[default]
     Online,
     /// Currently downloading content from cloud
     Hydrating,
@@ -100,12 +101,6 @@ impl ItemState {
             ItemState::Error(_) => "Error",
             ItemState::Deleted => "Deleted",
         }
-    }
-}
-
-impl Default for ItemState {
-    fn default() -> Self {
-        ItemState::Online
     }
 }
 

@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use super::newtypes::{AccountId, DeltaToken, SessionId, UniqueId};
 
 /// T034: Status of a sync session
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     /// Session is currently running
+    #[default]
     Running,
     /// Session completed successfully
     Completed,
@@ -41,12 +42,6 @@ impl SessionStatus {
     /// Returns true if the session failed
     pub fn is_failed(&self) -> bool {
         matches!(self, SessionStatus::Failed(_))
-    }
-}
-
-impl Default for SessionStatus {
-    fn default() -> Self {
-        SessionStatus::Running
     }
 }
 

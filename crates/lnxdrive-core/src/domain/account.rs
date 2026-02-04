@@ -10,10 +10,11 @@ use super::errors::DomainError;
 use super::newtypes::{AccountId, DeltaToken, Email, SyncPath};
 
 /// T031: Represents the current state of an account
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountState {
     /// Account is active and can sync
+    #[default]
     Active,
     /// OAuth token has expired, needs refresh
     TokenExpired,
@@ -32,12 +33,6 @@ impl AccountState {
     /// Returns true if the account needs token refresh
     pub fn needs_token_refresh(&self) -> bool {
         matches!(self, AccountState::TokenExpired)
-    }
-}
-
-impl Default for AccountState {
-    fn default() -> Self {
-        AccountState::Active
     }
 }
 

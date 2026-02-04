@@ -9,6 +9,7 @@ pub enum OutputFormat {
 pub trait OutputFormatter {
     fn success(&self, message: &str);
     fn error(&self, message: &str);
+    #[allow(dead_code)]
     fn warn(&self, message: &str);
     fn info(&self, message: &str);
     fn print_json(&self, value: &serde_json::Value);

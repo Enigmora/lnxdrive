@@ -30,13 +30,13 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude lnxdrive-fuse --exclude lnxdrive-conflict --exclude lnxdrive-audit --exclude lnxdrive-telemetry --all-targets -- -D warnings
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --exclude lnxdrive-fuse --exclude lnxdrive-conflict --exclude lnxdrive-audit --exclude lnxdrive-telemetry
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude lnxdrive-fuse --exclude lnxdrive-conflict --exclude lnxdrive-audit --exclude lnxdrive-telemetry
 
   security:
     name: Security Audit

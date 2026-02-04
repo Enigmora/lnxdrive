@@ -492,8 +492,8 @@ async fn test_get_audit_since() {
     let repo = setup().await;
 
     // Create entries at different times
-    let old_time = Utc::now() - Duration::hours(2);
-    let recent_time = Utc::now() - Duration::minutes(30);
+    let _old_time = Utc::now() - Duration::hours(2);
+    let _recent_time = Utc::now() - Duration::minutes(30);
 
     let entry1 =
         AuditEntry::new(AuditAction::SyncStart, AuditResult::success()).with_duration_ms(100);

@@ -219,7 +219,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::domain::{ErrorInfo, FileHash, RemotePath, SyncItem};
+    use crate::domain::{ErrorInfo, RemotePath, SyncItem};
 
     fn test_path() -> SyncPath {
         SyncPath::new(PathBuf::from("/home/user/OneDrive/test.txt")).unwrap()
