@@ -1,0 +1,20 @@
+# cargo-audit configuration
+# https://github.com/rustsec/rustsec/tree/main/cargo-audit
+
+[advisories]
+ignore = [
+    # protobuf v2.28.0 - DoS via uncontrolled recursion.
+    # Only pulled in by lnxdrive-telemetry (stub crate, not built).
+    # Will be resolved when prometheus is upgraded to v0.14+.
+    "RUSTSEC-2024-0437",
+
+    # rsa v0.9.10 - Marvin Attack timing sidechannel.
+    # No patch available. Transitive dependency not directly used by any
+    # workspace crate. Will be resolved upstream.
+    "RUSTSEC-2023-0071",
+
+    # sqlx v0.7.4 - Binary protocol misinterpretation (>4GiB payloads).
+    # Not exploitable in our usage (SQLite only, no untrusted >4GiB input).
+    # Tracked for upgrade to sqlx 0.8.x.
+    "RUSTSEC-2024-0363",
+]
