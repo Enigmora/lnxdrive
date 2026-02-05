@@ -328,7 +328,15 @@
 - [ ] T101 [P] Run performance validation: verify `getattr` completes in <1ms (add benchmark test or tracing metric), verify `readdir` completes in <10ms for 1000 entries, verify idle memory <50MB with 10k tracked files
 - [x] T102 Run full test suite: `cargo test --workspace --exclude lnxdrive-conflict --exclude lnxdrive-audit --exclude lnxdrive-telemetry`
 - [x] T103 Run clippy: `cargo clippy --workspace --exclude lnxdrive-conflict --exclude lnxdrive-audit --exclude lnxdrive-telemetry -- -D warnings`
-- [ ] T104 Verify all 44 functional requirements (FR-001 through FR-044) from spec.md are addressed. Mark any gaps.
+- [x] T104 Verify all 44 functional requirements (FR-001 through FR-044) from spec.md are addressed. Mark any gaps.
+  - **Result**: 34/44 fully implemented (77%), 10/44 partially implemented (23%), 0 missing.
+  - **Gaps identified** (non-blocking, require FUSE IPC mechanism for CLI↔daemon communication):
+    - FR-007: Auto-hydration trigger on open (logic present, integration deferred)
+    - FR-019 to FR-022: Pin/unpin CLI backend integration (commands exist, need IPC)
+    - FR-024: Write-to-placeholder auto-hydration (requires FR-007)
+    - FR-033: Progress xattr returns "0" placeholder (full integration deferred)
+    - FR-039 to FR-041: Pin/hydrate/dehydrate CLI backend (commands exist, need IPC)
+  - **Conclusion**: Core FUSE functionality is complete. CLI commands exist but need FUSE IPC mechanism (future task in Fase 3 GNOME integration with D-Bus).
 - [ ] T105 Run quickstart.md validation steps end-to-end (requires FUSE support on host or container)
 
 ---
