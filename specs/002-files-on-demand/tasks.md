@@ -78,6 +78,10 @@
 - [ ] T024 Implement `ContentCache` struct in `crates/lnxdrive-fuse/src/cache.rs`: constructor `new(cache_dir: PathBuf)` creates `cache_dir/content/` if not exists. Methods: `cache_path(remote_id: &RemoteId) -> PathBuf` (compute SHA-256 of remote_id, return `content/{first_2_chars}/{rest}`), `store(remote_id: &RemoteId, data: &[u8]) -> Result<PathBuf>` (write data to cache path, create parent dirs), `read(remote_id: &RemoteId, offset: u64, size: u32) -> Result<Vec<u8>>` (read bytes from cached file at offset), `exists(remote_id: &RemoteId) -> bool`, `remove(remote_id: &RemoteId) -> Result<()>` (delete cached file), `disk_usage() -> Result<u64>` (sum of all files in content/), `partial_path(remote_id: &RemoteId) -> PathBuf` (same as cache_path but with `.partial` extension, for in-progress downloads)
 - [ ] T025 [P] Add unit tests for `ContentCache` in `crates/lnxdrive-fuse/src/cache.rs`: test `cache_path` produces correct SHA-256 hash layout, test `store` and `read` round-trip, test `exists` returns correct bool, test `remove` deletes file, test `disk_usage` computes correctly, test `partial_path` has `.partial` suffix
 
+### InodeNumber Newtype
+
+- [ ] T106 [P] Create `InodeNumber` newtype in `crates/lnxdrive-fuse/src/inode_entry.rs`: define `pub struct InodeNumber(u64)` with `impl InodeNumber { pub fn new(val: u64) -> Self`, `pub fn get(&self) -> u64` }. Implement `From<u64>`, `Into<u64>`, `Display`, `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`. Define constants: `ROOT_INO = InodeNumber(1)`. This satisfies Constitution Principle II (Idiomatic Rust — newtypes for type safety) and prevents accidental mixing of raw inode numbers with other u64 identifiers.
+
 ### Inode Entry & Table
 
 - [ ] T026 Implement `InodeEntry` struct in `crates/lnxdrive-fuse/src/inode_entry.rs`: all fields per data-model.md (ino, item_id, remote_id, parent_ino, name, kind, size, perm, mtime, ctime, atime, nlink, lookup_count, open_handles, state). Constructor `new(...)`. Method `to_file_attr(&self) -> fuser::FileAttr` converting fields to FUSE format. Method `increment_lookup()`, `decrement_lookup()`, `increment_open_handles()`, `decrement_open_handles()`, `is_expired(lookup_count == 0 && open_handles == 0)`. Getters for all fields.
@@ -105,7 +109,7 @@
 ### Metadata Operations
 
 - [ ] T032 [US1] Implement `fuser::Filesystem::lookup()` in `crates/lnxdrive-fuse/src/filesystem.rs`: given `parent: u64` and `name: &OsStr`, search `inode_table.lookup(parent, name)`. If found: increment `lookup_count`, return `ReplyEntry` with TTL (1 second), `FileAttr` from `InodeEntry::to_file_attr()`, and generation=0. If not found: reply with `ENOENT`.
-- [ ] T033 [US1] Implement `fuser::Filesystem::getattr()` in `crates/lnxdrive-fuse/src/filesystem.rs`: given `ino: u64`, look up in `inode_table.get(ino)`. Return real file size (from the `size` field on `InodeEntry`, which holds the remote size even for placeholders). Reply with `ReplyAttr`, TTL 1 second. If not found: `ENOENT`. Target: <1ms.
+- [ ] T033 [US1] Implement `fuser::Filesystem::getattr()` in `crates/lnxdrive-fuse/src/filesystem.rs`: given `ino: u64`, look up in `inode_table.get(ino)`. Return real file size (from the `size` field on `InodeEntry`, which holds the remote size even for placeholders). Reply with `ReplyAttr`, TTL 1 second. If not found: `ENOENT`. Target: <1ms. **U2 Note (stale entries)**: If a file was deleted from OneDrive since the last sync, FUSE will still return cached metadata until the sync engine runs a delta query and removes the entry from the state repository. This is intentional — FUSE serves from local state for performance. Stale entry cleanup is the sync engine's responsibility (Fase 1). During hydration, if the download URL returns 404, transition the entry to `Deleted` state and return `ENOENT`.
 - [ ] T034 [P] [US1] Implement `fuser::Filesystem::setattr()` in `crates/lnxdrive-fuse/src/filesystem.rs`: handle permission changes (update `perm` field), timestamp changes (update `mtime`/`atime`/`ctime`), truncate (if size changes, mark as modified). Persist changes via WriteSerializer. Reply with updated `FileAttr`.
 - [ ] T035 [P] [US1] Implement `fuser::Filesystem::statfs()` in `crates/lnxdrive-fuse/src/filesystem.rs`: return filesystem statistics. Use `cache.disk_usage()` for used blocks, `config.cache_max_size_gb * 1024^3` for total blocks. Block size = 4096. Reply with `ReplyStatfs`.
 - [ ] T036 [US1] Implement `fuser::Filesystem::forget()` in `crates/lnxdrive-fuse/src/filesystem.rs`: given `ino: u64` and `nlookup: u64`, decrement `lookup_count` by `nlookup` on the InodeEntry. If `lookup_count == 0 && open_handles == 0`, the entry is eligible for GC (but do not remove yet — may be needed by parent directory listing).
@@ -172,7 +176,11 @@
 - [ ] T061 [P] [US2] Add unit tests for `HydrationManager` in `crates/lnxdrive-fuse/src/hydration.rs`: test deduplication (two hydrate() calls for same ino return same watch receiver), test concurrency limit (semaphore blocks when limit reached), test progress tracking (watch receiver receives updates), test cancel removes from active map
 - [ ] T062 [P] [US2] Add unit tests for `open` and `read` in `crates/lnxdrive-fuse/src/filesystem.rs`: test open on placeholder triggers hydration, test open increments open_handles, test read returns cached data, test release decrements open_handles, test double open with dedup
 
-**Checkpoint**: Opening a placeholder file triggers download, `cat` delivers content, state transitions Online→Hydrating→Hydrated. US2 acceptance scenarios 1-5 pass.
+### Crash Recovery (FR-012)
+
+- [ ] T096 Implement crash recovery in `LnxDriveFs::init()` in `crates/lnxdrive-fuse/src/filesystem.rs`: during init, scan for items with state `Hydrating` (stale from a crash). For each: check if `.partial` file exists in cache. If exists and size > 0: resume hydration from the downloaded offset. If not: reset state to `Online`. This handles edge case: "What happens when the FUSE daemon crashes while files are being hydrated?" Placed in Stage 4 because FR-012 (resumable hydration) requires crash recovery to be available before higher stages depend on hydration reliability.
+
+**Checkpoint**: Opening a placeholder file triggers download, `cat` delivers content, state transitions Online→Hydrating→Hydrated. Crash recovery resumes interrupted hydrations. US2 acceptance scenarios 1-5 pass.
 
 ---
 
@@ -305,10 +313,6 @@
 
 - [ ] T095 Extend `crates/lnxdrive-daemon/` (or `crates/lnxdrive-cli/src/commands/daemon.rs`): when daemon starts and `config.fuse.auto_mount` is true, call `lnxdrive_fuse::mount()`. On daemon stop, call unmount. Ensure graceful shutdown (complete or cancel in-progress hydrations).
 
-### Crash Recovery
-
-- [ ] T096 Implement crash recovery in `LnxDriveFs::init()` in `crates/lnxdrive-fuse/src/filesystem.rs`: during init, scan for items with state `Hydrating` (stale from a crash). For each: check if `.partial` file exists in cache. If exists and size > 0: resume hydration from the downloaded offset. If not: reset state to `Online`. This handles edge case: "What happens when the FUSE daemon crashes while files are being hydrated?"
-
 ---
 
 ## Stage 10: Polish & Cross-Cutting Concerns
@@ -317,7 +321,7 @@
 
 - [ ] T097 [P] Add tracing instrumentation to all FUSE operations in `crates/lnxdrive-fuse/src/filesystem.rs`: add `#[tracing::instrument]` to each Filesystem method, log at `debug` level for normal operations, `warn` for errors, `info` for state transitions
 - [ ] T098 [P] Add input validation to all FUSE operations in `crates/lnxdrive-fuse/src/filesystem.rs`: validate file name length (< 255 bytes → ENAMETOOLONG), validate inode exists before operations, validate file type matches expected (e.g., readdir on file → ENOTDIR)
-- [ ] T099 [P] Handle concurrent access edge cases in `crates/lnxdrive-fuse/src/filesystem.rs`: ensure mmap compatibility (read returns correct data for memory-mapped files), ensure two processes reading same file during hydration both get correct data, ensure write during hydration blocks correctly
+- [ ] T099 [P] Handle concurrent access edge cases in `crates/lnxdrive-fuse/src/filesystem.rs`: ensure mmap compatibility (read returns correct data for memory-mapped files), ensure two processes reading same file during hydration both get correct data, ensure write during hydration blocks correctly. **U1 Note (mmap)**: FUSE handles mmap via `read()` by default — no special implementation needed. For unhydrated files accessed via mmap, the kernel will issue `read()` calls which trigger hydration. If hydration fails or times out, return `EIO` to the mmap read. Document this behavior in code comments.
 - [ ] T100 [P] Add documentation comments to all public APIs in `crates/lnxdrive-fuse/src/lib.rs`: document `mount()`, `unmount()`, re-exported types with usage examples
 - [ ] T101 [P] Run performance validation: verify `getattr` completes in <1ms (add benchmark test or tracing metric), verify `readdir` completes in <10ms for 1000 entries, verify idle memory <50MB with 10k tracked files
 - [ ] T102 Run full test suite: `cargo test --workspace --exclude lnxdrive-conflict --exclude lnxdrive-audit --exclude lnxdrive-telemetry`

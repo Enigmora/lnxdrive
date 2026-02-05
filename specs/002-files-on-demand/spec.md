@@ -203,7 +203,7 @@ A power user or desktop integration component can query the state of any file us
 
 #### Configuration
 
-- **FR-043**: System MUST support configuration via the existing configuration file with a `fuse` section including: mount_point, auto_mount, dehydration_threshold_percent, dehydration_max_age_days, hydration_concurrency.
+- **FR-043**: System MUST support configuration via the existing configuration file with a `fuse` section including: mount_point, auto_mount, cache_dir, cache_max_size_gb, dehydration_threshold_percent, dehydration_max_age_days, dehydration_interval_minutes, hydration_concurrency.
 - **FR-044**: System MUST support overriding the mount point via CLI flag.
 
 ### Key Entities
