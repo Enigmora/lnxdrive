@@ -27,11 +27,12 @@ use lnxdrive_core::{
     },
     ports::{IStateRepository, ItemFilter},
 };
-use tokio::runtime::Handle;
+use tokio::{runtime::Handle, task::JoinHandle};
 use tracing::{debug, warn};
 
 use crate::{
     cache::ContentCache,
+    dehydration::{DehydrationManager, DehydrationPolicy},
     inode::InodeTable,
     inode_entry::{InodeEntry, InodeNumber},
     write_serializer::{WriteSerializer, WriteSerializerHandle},
@@ -122,6 +123,12 @@ pub struct LnxDriveFs {
 
     /// Counter for allocating unique file handles
     next_fh: AtomicU64,
+
+    /// Manager for automatic dehydration of cached files (T086)
+    dehydration_manager: Option<Arc<DehydrationManager>>,
+
+    /// Handle to the periodic dehydration sweep task (T086)
+    dehydration_task: Option<JoinHandle<()>>,
 }
 
 impl LnxDriveFs {
@@ -165,6 +172,16 @@ impl LnxDriveFs {
         // Initialize an empty inode table
         let inode_table = Arc::new(InodeTable::new());
 
+        // T086: Create the DehydrationManager for automatic cache cleanup
+        let policy = DehydrationPolicy::from_config(&config);
+        let dehydration_manager = Arc::new(DehydrationManager::new(
+            policy,
+            cache.clone(),
+            inode_table.clone(),
+            write_handle.clone(),
+            db_pool.clone(),
+        ));
+
         Self {
             rt_handle,
             inode_table,
@@ -173,6 +190,8 @@ impl LnxDriveFs {
             config,
             db_pool,
             next_fh: AtomicU64::new(1),
+            dehydration_manager: Some(dehydration_manager),
+            dehydration_task: None,
         }
     }
 
@@ -514,14 +533,27 @@ impl Filesystem for LnxDriveFs {
             "LnxDrive FUSE filesystem initialized"
         );
 
+        // T086: Start the periodic dehydration sweep task
+        if let Some(manager) = &self.dehydration_manager {
+            let interval = manager.policy().interval_minutes;
+            tracing::info!(
+                interval_minutes = interval,
+                "Starting periodic dehydration sweep"
+            );
+            let task = manager.clone().start_periodic();
+            self.dehydration_task = Some(task);
+        }
+
         Ok(())
     }
 
     /// Clean up filesystem.
     ///
     /// Called on filesystem exit. This method:
-    /// 1. Logs a shutdown message
-    /// 2. The WriteSerializer handle is automatically dropped when LnxDriveFs is dropped,
+    /// 1. Signals the DehydrationManager to stop periodic sweeps (T086)
+    /// 2. Aborts the dehydration task if running
+    /// 3. Logs a shutdown message
+    /// 4. The WriteSerializer handle is automatically dropped when LnxDriveFs is dropped,
     ///    which signals the writer task to stop.
     #[tracing::instrument(level = "info", skip(self))]
     fn destroy(&mut self) {
@@ -529,6 +561,19 @@ impl Filesystem for LnxDriveFs {
             items_in_table = self.inode_table.len(),
             "LnxDrive FUSE filesystem shutting down"
         );
+
+        // T086: Stop the periodic dehydration sweep
+        if let Some(manager) = &self.dehydration_manager {
+            tracing::debug!("Signaling DehydrationManager to stop");
+            // Use block_on to call the async shutdown method from sync context
+            self.rt_handle.block_on(manager.shutdown());
+        }
+
+        // T086: Abort the dehydration task if it's still running
+        if let Some(task) = self.dehydration_task.take() {
+            tracing::debug!("Aborting dehydration task");
+            task.abort();
+        }
 
         // The WriteSerializerHandle will be dropped when LnxDriveFs is dropped,
         // which will close the channel and signal the writer task to exit.

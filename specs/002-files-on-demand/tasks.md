@@ -266,8 +266,8 @@
 
 ### Integration with Mount Lifecycle
 
-- [ ] T086 [US5] Wire `DehydrationManager::start_periodic()` into `LnxDriveFs` lifecycle in `crates/lnxdrive-fuse/src/filesystem.rs` or `crates/lnxdrive-fuse/src/lib.rs`: start the periodic sweep when mount() is called, cancel the task when unmount() occurs (on destroy).
-  - **NOTE**: Deferred to Stage 9 (Integration). Requires adding `dehydration_manager` and `dehydration_task` fields to LnxDriveFs struct.
+- [x] T086 [US5] Wire `DehydrationManager::start_periodic()` into `LnxDriveFs` lifecycle in `crates/lnxdrive-fuse/src/filesystem.rs` or `crates/lnxdrive-fuse/src/lib.rs`: start the periodic sweep when mount() is called, cancel the task when unmount() occurs (on destroy).
+  - Added `dehydration_manager: Option<Arc<DehydrationManager>>` and `dehydration_task: Option<JoinHandle<()>>` fields to `LnxDriveFs` struct. DehydrationManager is created in `new()`, `start_periodic()` is called in `init()`, and `shutdown()` + `abort()` are called in `destroy()`.
 
 ### Unit Tests for Stage 7
 
