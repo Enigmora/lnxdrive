@@ -427,6 +427,8 @@ This project has access to the **Context7 MCP server**, which provides real-time
 ## Active Technologies
 - Rust 1.75+ (MSRV) + tokio (async runtime), reqwest (HTTP), oauth2-rs (OAuth2 PKCE), zbus (D-Bus), sqlx (SQLite), clap (CLI), serde (serialization), thiserror/anyhow (errors) (001-core-cli)
 - SQLite 3.35+ (estado de sincronizacion, audit log) (001-core-cli)
+- Rust 1.75+ (MSRV) + `fuser` 0.16 (FUSE protocol), `tokio` 1.35 (async runtime), `sqlx` 0.7 (SQLite), `reqwest` 0.12 (HTTP downloads), `dashmap` (concurrent inode table) (002-files-on-demand)
+- SQLite 3.35+ (state repository, inode mapping) + filesystem cache (`~/.local/share/lnxdrive/cache/content/`) (002-files-on-demand)
 
 ## Recent Changes
 - 001-core-cli: Added Rust 1.75+ (MSRV) + tokio (async runtime), reqwest (HTTP), oauth2-rs (OAuth2 PKCE), zbus (D-Bus), sqlx (SQLite), clap (CLI), serde (serialization), thiserror/anyhow (errors)
