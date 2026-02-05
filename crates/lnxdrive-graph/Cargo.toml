@@ -23,6 +23,7 @@ http-body-util.workspace = true
 webbrowser.workspace = true
 chrono.workspace = true
 async-trait.workspace = true
+futures-util = "0.3"
 url = "2.5"
 
 [dev-dependencies]

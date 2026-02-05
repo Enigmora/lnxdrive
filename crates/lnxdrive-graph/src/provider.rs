@@ -12,21 +12,24 @@
 //! - `get_metadata` and `delete_item` make direct Graph API calls via the
 //!   underlying `GraphClient::request()` method.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
+use lnxdrive_core::{
+    domain::newtypes::{DeltaToken, RemoteId, RemotePath},
+    ports::cloud_provider::{AuthFlow, DeltaItem, DeltaResponse, ICloudProvider, Tokens, UserInfo},
+};
 use reqwest::Method;
 use serde::Deserialize;
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncSeekExt, AsyncWriteExt},
+    sync::Mutex,
+};
 use tracing::debug;
 
-use lnxdrive_core::domain::newtypes::{DeltaToken, RemoteId, RemotePath};
-use lnxdrive_core::ports::cloud_provider::{
-    AuthFlow, DeltaItem, DeltaResponse, ICloudProvider, Tokens, UserInfo,
-};
-
-use crate::client::GraphClient;
-use crate::delta;
-use crate::upload;
+use crate::{client::GraphClient, delta, upload};
 
 // ============================================================================
 // Graph API response type for get_metadata
@@ -277,6 +280,175 @@ impl ICloudProvider for GraphCloudProvider {
 
         debug!(id = %remote_id, "Item deleted successfully");
         Ok(())
+    }
+}
+
+// ============================================================================
+// T059/T060: Files-on-Demand download methods
+// ============================================================================
+
+impl GraphCloudProvider {
+    /// Get the download URL for a file.
+    ///
+    /// Calls Microsoft Graph `GET /me/drive/items/{id}` and returns
+    /// the `@microsoft.graph.downloadUrl` field. This URL is a pre-authenticated
+    /// direct download link that bypasses the Graph API and goes directly to
+    /// the storage backend.
+    ///
+    /// # Arguments
+    /// * `remote_id` - The OneDrive item ID of the file
+    ///
+    /// # Returns
+    /// The pre-authenticated download URL string
+    ///
+    /// # Note
+    /// Download URLs are short-lived (typically valid for ~1 hour).
+    pub async fn get_download_url(&self, remote_id: &RemoteId) -> Result<String> {
+        let client = self.client.lock().await;
+        let url = format!(
+            "{}/me/drive/items/{}",
+            client.base_url(),
+            remote_id.as_str()
+        );
+        debug!(id = %remote_id, "Getting download URL");
+
+        let response: serde_json::Value = client
+            .client()
+            .get(&url)
+            .bearer_auth(client.access_token())
+            .send()
+            .await
+            .context("Failed to send get item request")?
+            .error_for_status()
+            .context("Get item request returned error status")?
+            .json()
+            .await
+            .context("Failed to parse response as JSON")?;
+
+        response["@microsoft.graph.downloadUrl"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow::anyhow!("No download URL in response"))
+    }
+
+    /// Download a complete file to disk.
+    ///
+    /// Uses streaming response to avoid loading entire file into memory.
+    /// Returns total bytes written.
+    ///
+    /// # Arguments
+    /// * `download_url` - Pre-authenticated download URL (from [`get_download_url`])
+    /// * `dest` - Destination path where the file will be written
+    ///
+    /// # Returns
+    /// Total number of bytes written to the destination file
+    pub async fn download_file_to_disk(&self, download_url: &str, dest: &Path) -> Result<u64> {
+        let client = self.client.lock().await;
+        debug!(dest = %dest.display(), "Downloading file to disk");
+
+        let response = client
+            .client()
+            .get(download_url)
+            .send()
+            .await
+            .context("Failed to send download request")?
+            .error_for_status()
+            .context("Download request returned error status")?;
+
+        let mut file = tokio::fs::File::create(dest)
+            .await
+            .context("Failed to create destination file")?;
+
+        let mut total_bytes = 0u64;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("Failed to read chunk from response")?;
+            file.write_all(&chunk)
+                .await
+                .context("Failed to write chunk to file")?;
+            total_bytes += chunk.len() as u64;
+        }
+
+        file.flush().await.context("Failed to flush file")?;
+        debug!(bytes = total_bytes, dest = %dest.display(), "Download complete");
+        Ok(total_bytes)
+    }
+
+    /// Download a byte range of a file.
+    ///
+    /// Uses HTTP Range header for partial download. The bytes are written
+    /// to the destination file at the specified offset.
+    ///
+    /// # Arguments
+    /// * `download_url` - Pre-authenticated download URL (from [`get_download_url`])
+    /// * `dest` - Destination path where the bytes will be written
+    /// * `offset` - Byte offset in the file to start writing at
+    /// * `length` - Number of bytes to download
+    ///
+    /// # Returns
+    /// Number of bytes actually written (may be less than `length` if EOF reached)
+    pub async fn download_range(
+        &self,
+        download_url: &str,
+        dest: &Path,
+        offset: u64,
+        length: u64,
+    ) -> Result<u64> {
+        let client = self.client.lock().await;
+        let range_header = format!("bytes={}-{}", offset, offset + length - 1);
+        debug!(
+            dest = %dest.display(),
+            offset,
+            length,
+            range = %range_header,
+            "Downloading byte range"
+        );
+
+        let response = client
+            .client()
+            .get(download_url)
+            .header("Range", range_header)
+            .send()
+            .await
+            .context("Failed to send range download request")?
+            .error_for_status()
+            .context("Range download request returned error status")?;
+
+        let bytes = response
+            .bytes()
+            .await
+            .context("Failed to read response bytes")?;
+
+        // Open file and seek to offset
+        // We use truncate(false) because we're writing to a specific offset,
+        // potentially in an existing file that we want to keep the rest of.
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(dest)
+            .await
+            .context("Failed to open destination file")?;
+
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .context("Failed to seek to offset")?;
+
+        file.write_all(&bytes)
+            .await
+            .context("Failed to write bytes to file")?;
+
+        file.flush().await.context("Failed to flush file")?;
+
+        let bytes_written = bytes.len() as u64;
+        debug!(
+            bytes = bytes_written,
+            offset,
+            dest = %dest.display(),
+            "Range download complete"
+        );
+        Ok(bytes_written)
     }
 }
 

@@ -16,6 +16,7 @@ lnxdrive-sync.workspace = true
 lnxdrive-ipc.workspace = true
 lnxdrive-cache.workspace = true
 lnxdrive-graph.workspace = true
+lnxdrive-fuse.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 anyhow.workspace = true

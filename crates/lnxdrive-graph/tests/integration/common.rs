@@ -4,10 +4,11 @@
 //! Each helper mounts the necessary mock endpoints and returns a configured
 //! GraphClient pointing at the mock server.
 
-use wiremock::matchers::{method, path, path_regex};
-use wiremock::{Mock, MockServer, ResponseTemplate};
-
 use lnxdrive_graph::client::GraphClient;
+use wiremock::{
+    matchers::{method, path, path_regex},
+    Mock, MockServer, ResponseTemplate,
+};
 
 /// Sets up a mock server with common Graph API endpoints and returns
 /// a (MockServer, GraphClient) tuple.

@@ -7,18 +7,20 @@
 use std::path::PathBuf;
 
 use chrono::{Duration, Utc};
-use uuid::Uuid;
-
 use lnxdrive_cache::{DatabasePool, SqliteStateRepository};
-use lnxdrive_core::domain::{
-    newtypes::{
-        AccountId, DeltaToken, Email, FileHash, RemoteId, RemotePath, SessionId, SyncPath, UniqueId,
+use lnxdrive_core::{
+    domain::{
+        newtypes::{
+            AccountId, DeltaToken, Email, FileHash, RemoteId, RemotePath, SessionId, SyncPath,
+            UniqueId,
+        },
+        sync_item::ItemState,
+        Account, AccountState, AuditAction, AuditEntry, AuditResult, Conflict, Resolution,
+        ResolutionSource, SyncItem, SyncSession, VersionInfo,
     },
-    sync_item::ItemState,
-    Account, AccountState, AuditAction, AuditEntry, AuditResult, Conflict, Resolution,
-    ResolutionSource, SyncItem, SyncSession, VersionInfo,
+    ports::{IStateRepository, ItemFilter},
 };
-use lnxdrive_core::ports::{IStateRepository, ItemFilter};
+use uuid::Uuid;
 
 // ============================================================================
 // Test helpers
@@ -57,6 +59,29 @@ fn create_test_sync_item() -> SyncItem {
 /// Valid quickXorHash Base64 strings (20 bytes = 28 chars with padding)
 const VALID_HASH_1: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const VALID_HASH_2: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+
+/// Create a hydrated test sync item (for FUSE tests)
+fn create_hydrated_sync_item(path: &str) -> SyncItem {
+    let local_path = SyncPath::new(PathBuf::from(path)).unwrap();
+    let remote_path = RemotePath::new(format!("/{}", path.split('/').last().unwrap())).unwrap();
+    let mut item = SyncItem::new_file(
+        local_path,
+        remote_path,
+        1024,
+        Some("text/plain".to_string()),
+    )
+    .unwrap();
+
+    // Set remote ID (use a valid format without dots or special chars) and mark as hydrated
+    let filename = path.split('/').last().unwrap().replace(".", "_");
+    let remote_id = RemoteId::new(format!("remote_{}", filename)).unwrap();
+    item.set_remote_id(remote_id);
+
+    // Transition: Online -> Hydrating -> Hydrated
+    item.start_hydrating().unwrap();
+    item.complete_hydration().unwrap();
+    item
+}
 
 // ============================================================================
 // Account tests
@@ -766,4 +791,238 @@ async fn test_session_with_errors() {
     assert_eq!(retrieved.items_failed(), 1);
     assert_eq!(retrieved.errors().len(), 1);
     assert_eq!(retrieved.errors()[0].error_code(), "NET_ERROR");
+}
+
+// ============================================================================
+// FUSE inode tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_next_inode_sequential() {
+    let repo = setup().await;
+
+    // Get three sequential inodes
+    let inode1 = repo.get_next_inode().await.unwrap();
+    let inode2 = repo.get_next_inode().await.unwrap();
+    let inode3 = repo.get_next_inode().await.unwrap();
+
+    // Should start at 2 (1 is reserved for root)
+    assert_eq!(inode1, 2);
+    assert_eq!(inode2, 3);
+    assert_eq!(inode3, 4);
+}
+
+#[tokio::test]
+async fn test_update_and_get_item_by_inode() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    // Create and save an item
+    let item = create_test_sync_item();
+    repo.save_item(&item).await.unwrap();
+
+    // Assign an inode
+    let inode = repo.get_next_inode().await.unwrap();
+    repo.update_inode(item.id(), inode).await.unwrap();
+
+    // Retrieve by inode
+    let retrieved = repo.get_item_by_inode(inode).await.unwrap();
+    assert!(retrieved.is_some());
+    assert_eq!(retrieved.unwrap().id(), item.id());
+}
+
+#[tokio::test]
+async fn test_get_item_by_nonexistent_inode() {
+    let repo = setup().await;
+
+    let result = repo.get_item_by_inode(999).await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn test_update_inode_nonexistent_item() {
+    let repo = setup().await;
+    let fake_id = UniqueId::new();
+
+    let result = repo.update_inode(&fake_id, 123).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Item not found"));
+}
+
+#[tokio::test]
+async fn test_update_last_accessed() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    let item = create_test_sync_item();
+    repo.save_item(&item).await.unwrap();
+
+    // Update last accessed time
+    let now = Utc::now();
+    repo.update_last_accessed(item.id(), now).await.unwrap();
+
+    // Retrieve and verify (we'd need to add a getter in SyncItem for full verification)
+    let retrieved = repo.get_item(item.id()).await.unwrap();
+    assert!(retrieved.is_some());
+}
+
+#[tokio::test]
+async fn test_update_last_accessed_nonexistent_item() {
+    let repo = setup().await;
+    let fake_id = UniqueId::new();
+
+    let result = repo.update_last_accessed(&fake_id, Utc::now()).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Item not found"));
+}
+
+#[tokio::test]
+async fn test_update_hydration_progress() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    let item = create_test_sync_item();
+    repo.save_item(&item).await.unwrap();
+
+    // Update progress to 50%
+    repo.update_hydration_progress(item.id(), Some(50))
+        .await
+        .unwrap();
+
+    // Clear progress
+    repo.update_hydration_progress(item.id(), None)
+        .await
+        .unwrap();
+
+    let retrieved = repo.get_item(item.id()).await.unwrap();
+    assert!(retrieved.is_some());
+}
+
+#[tokio::test]
+async fn test_update_hydration_progress_nonexistent_item() {
+    let repo = setup().await;
+    let fake_id = UniqueId::new();
+
+    let result = repo.update_hydration_progress(&fake_id, Some(75)).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Item not found"));
+}
+
+#[tokio::test]
+async fn test_get_items_for_dehydration() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    // Create three hydrated items with different access times
+    let item1 = create_hydrated_sync_item("/home/user/OneDrive/old.txt");
+    let item2 = create_hydrated_sync_item("/home/user/OneDrive/recent.txt");
+    let item3 = create_hydrated_sync_item("/home/user/OneDrive/newer.txt");
+
+    repo.save_item(&item1).await.unwrap();
+    repo.save_item(&item2).await.unwrap();
+    repo.save_item(&item3).await.unwrap();
+
+    // Set different last_accessed times
+    let old_time = Utc::now() - Duration::days(100);
+    let recent_time = Utc::now() - Duration::days(10);
+    let newer_time = Utc::now() - Duration::days(5);
+
+    repo.update_last_accessed(item1.id(), old_time)
+        .await
+        .unwrap();
+    repo.update_last_accessed(item2.id(), recent_time)
+        .await
+        .unwrap();
+    repo.update_last_accessed(item3.id(), newer_time)
+        .await
+        .unwrap();
+
+    // Query for items not accessed in the last 30 days
+    let candidates = repo.get_items_for_dehydration(30, 10).await.unwrap();
+
+    // Should return item1 (100 days old)
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id(), item1.id());
+}
+
+#[tokio::test]
+async fn test_get_items_for_dehydration_respects_limit() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    // Create multiple old hydrated items
+    for i in 0..5 {
+        let path = format!("/home/user/OneDrive/file{}.txt", i);
+        let item = create_hydrated_sync_item(&path);
+        repo.save_item(&item).await.unwrap();
+
+        let old_time = Utc::now() - Duration::days(100);
+        repo.update_last_accessed(item.id(), old_time)
+            .await
+            .unwrap();
+    }
+
+    // Query with limit of 3
+    let candidates = repo.get_items_for_dehydration(30, 3).await.unwrap();
+    assert_eq!(candidates.len(), 3);
+}
+
+#[tokio::test]
+async fn test_get_items_for_dehydration_empty_result() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    // Create hydrated item accessed recently
+    let item = create_hydrated_sync_item("/home/user/OneDrive/recent.txt");
+    repo.save_item(&item).await.unwrap();
+
+    let recent_time = Utc::now() - Duration::days(1);
+    repo.update_last_accessed(item.id(), recent_time)
+        .await
+        .unwrap();
+
+    // Query for items not accessed in the last 30 days
+    let candidates = repo.get_items_for_dehydration(30, 10).await.unwrap();
+    assert!(candidates.is_empty());
+}
+
+#[tokio::test]
+async fn test_get_items_for_dehydration_excludes_pinned_and_modified() {
+    let repo = setup().await;
+    let _account = create_test_account(&repo).await;
+
+    // Create hydrated items in different states
+    let item_hydrated = create_hydrated_sync_item("/home/user/OneDrive/hydrated.txt");
+    let mut item_pinned = create_hydrated_sync_item("/home/user/OneDrive/pinned.txt");
+    let mut item_modified = create_hydrated_sync_item("/home/user/OneDrive/modified.txt");
+
+    // Transition pinned item to Pinned state
+    item_pinned.pin().unwrap();
+
+    // Transition modified item to Modified state
+    item_modified.mark_modified().unwrap();
+
+    repo.save_item(&item_hydrated).await.unwrap();
+    repo.save_item(&item_pinned).await.unwrap();
+    repo.save_item(&item_modified).await.unwrap();
+
+    // Set all items to have old access times
+    let old_time = Utc::now() - Duration::days(100);
+    repo.update_last_accessed(item_hydrated.id(), old_time)
+        .await
+        .unwrap();
+    repo.update_last_accessed(item_pinned.id(), old_time)
+        .await
+        .unwrap();
+    repo.update_last_accessed(item_modified.id(), old_time)
+        .await
+        .unwrap();
+
+    // Query for dehydration candidates
+    let candidates = repo.get_items_for_dehydration(30, 10).await.unwrap();
+
+    // Should only return the hydrated item, not pinned or modified
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id(), item_hydrated.id());
+    assert!(matches!(candidates[0].state(), ItemState::Hydrated));
 }

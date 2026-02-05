@@ -5,5 +5,8 @@ pub mod config;
 pub mod conflicts;
 pub mod daemon;
 pub mod explain;
+pub mod hydrate;
+pub mod mount;
+pub mod pin;
 pub mod status;
 pub mod sync;

@@ -29,12 +29,15 @@
 //!                              └───────────┘
 //! ```
 
-use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use super::errors::DomainError;
-use super::newtypes::{FileHash, RemoteId, RemotePath, SyncPath, UniqueId};
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
+
+use super::{
+    errors::DomainError,
+    newtypes::{FileHash, RemoteId, RemotePath, SyncPath, UniqueId},
+};
 
 // ============================================================================
 // T025: ItemState enum
@@ -54,6 +57,8 @@ pub enum ItemState {
     Hydrating,
     /// Fully synced, content available locally
     Hydrated,
+    /// Always kept on device, cannot be dehydrated
+    Pinned,
     /// Local changes pending upload to cloud
     Modified,
     /// Conflict detected between local and remote versions
@@ -67,7 +72,10 @@ pub enum ItemState {
 impl ItemState {
     /// Returns true if the item content is available locally
     pub fn is_local(&self) -> bool {
-        matches!(self, ItemState::Hydrated | ItemState::Modified)
+        matches!(
+            self,
+            ItemState::Hydrated | ItemState::Pinned | ItemState::Modified
+        )
     }
 
     /// Returns true if the item is only a placeholder
@@ -90,12 +98,26 @@ impl ItemState {
         matches!(self, ItemState::Modified)
     }
 
+    /// Returns true if the item is pinned (always kept on device)
+    pub fn is_pinned(&self) -> bool {
+        matches!(self, ItemState::Pinned)
+    }
+
+    /// Returns true if the item can be dehydrated (converted to placeholder)
+    ///
+    /// Only Hydrated items can be dehydrated. Pinned items are always kept
+    /// on device, and Modified items must be synced first.
+    pub fn can_dehydrate(&self) -> bool {
+        matches!(self, ItemState::Hydrated)
+    }
+
     /// Returns the state name as a string (without error details)
     pub fn name(&self) -> &'static str {
         match self {
             ItemState::Online => "Online",
             ItemState::Hydrating => "Hydrating",
             ItemState::Hydrated => "Hydrated",
+            ItemState::Pinned => "Pinned",
             ItemState::Modified => "Modified",
             ItemState::Conflicted => "Conflicted",
             ItemState::Error(_) => "Error",
@@ -110,6 +132,7 @@ impl fmt::Display for ItemState {
             ItemState::Online => write!(f, "online"),
             ItemState::Hydrating => write!(f, "hydrating"),
             ItemState::Hydrated => write!(f, "hydrated"),
+            ItemState::Pinned => write!(f, "pinned"),
             ItemState::Modified => write!(f, "modified"),
             ItemState::Conflicted => write!(f, "conflicted"),
             ItemState::Error(reason) => write!(f, "error: {}", reason),
@@ -462,6 +485,15 @@ pub struct SyncItem {
     metadata: ItemMetadata,
     /// Error information if state is Error
     error_info: Option<ErrorInfo>,
+    /// FUSE inode number (for Files-On-Demand)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inode: Option<u64>,
+    /// Last time file was accessed via FUSE
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_accessed: Option<DateTime<Utc>>,
+    /// Hydration progress 0-100 (for Files-On-Demand)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hydration_progress: Option<u8>,
 }
 
 // ============================================================================
@@ -509,6 +541,9 @@ impl SyncItem {
             last_modified_remote: None,
             metadata,
             error_info: None,
+            inode: None,
+            last_accessed: None,
+            hydration_progress: None,
         })
     }
 
@@ -636,6 +671,21 @@ impl SyncItem {
         }
     }
 
+    /// Returns the FUSE inode number
+    pub fn inode(&self) -> Option<u64> {
+        self.inode
+    }
+
+    /// Returns the last accessed time
+    pub fn last_accessed(&self) -> Option<DateTime<Utc>> {
+        self.last_accessed
+    }
+
+    /// Returns the hydration progress (0-100)
+    pub fn hydration_progress(&self) -> Option<u8> {
+        self.hydration_progress
+    }
+
     // --- Setters ---
 
     /// Sets the remote ID
@@ -682,6 +732,21 @@ impl SyncItem {
     pub fn update_remote_path(&mut self, path: RemotePath) {
         self.remote_path = path;
     }
+
+    /// Sets the FUSE inode number
+    pub fn set_inode(&mut self, inode: Option<u64>) {
+        self.inode = inode;
+    }
+
+    /// Sets the last accessed time
+    pub fn set_last_accessed(&mut self, accessed: Option<DateTime<Utc>>) {
+        self.last_accessed = accessed;
+    }
+
+    /// Sets the hydration progress (0-100)
+    pub fn set_hydration_progress(&mut self, progress: Option<u8>) {
+        self.hydration_progress = progress;
+    }
 }
 
 // ============================================================================
@@ -693,10 +758,11 @@ impl SyncItem {
     ///
     /// Valid transitions:
     /// - Online -> Hydrating, Error, Deleted
-    /// - Hydrating -> Hydrated, Error
-    /// - Hydrated -> Modified, Online (dehydrate), Error, Deleted
-    /// - Modified -> Hydrated (after sync), Conflicted, Error
-    /// - Conflicted -> Hydrated (after resolution), Error
+    /// - Hydrating -> Hydrated, Pinned, Error
+    /// - Hydrated -> Modified, Pinned, Online (dehydrate), Error, Deleted
+    /// - Pinned -> Modified, Error, Deleted (cannot dehydrate)
+    /// - Modified -> Hydrated, Pinned (after sync), Conflicted, Error
+    /// - Conflicted -> Hydrated, Pinned (after resolution), Error
     /// - Error -> any state (retry)
     /// - Deleted -> (terminal state, no transitions)
     pub fn can_transition_to(&self, target: &ItemState) -> bool {
@@ -718,21 +784,31 @@ impl SyncItem {
 
             // Hydrating transitions
             (ItemState::Hydrating, ItemState::Hydrated) => true,
+            (ItemState::Hydrating, ItemState::Pinned) => true,
             (ItemState::Hydrating, ItemState::Error(_)) => true,
 
             // Hydrated transitions
             (ItemState::Hydrated, ItemState::Modified) => true,
+            (ItemState::Hydrated, ItemState::Pinned) => true,
             (ItemState::Hydrated, ItemState::Online) => true, // dehydrate
             (ItemState::Hydrated, ItemState::Error(_)) => true,
             (ItemState::Hydrated, ItemState::Deleted) => true,
 
+            // Pinned transitions (cannot dehydrate)
+            (ItemState::Pinned, ItemState::Hydrated) => true, // unpin
+            (ItemState::Pinned, ItemState::Modified) => true,
+            (ItemState::Pinned, ItemState::Error(_)) => true,
+            (ItemState::Pinned, ItemState::Deleted) => true,
+
             // Modified transitions
             (ItemState::Modified, ItemState::Hydrated) => true, // after sync
+            (ItemState::Modified, ItemState::Pinned) => true,
             (ItemState::Modified, ItemState::Conflicted) => true,
             (ItemState::Modified, ItemState::Error(_)) => true,
 
             // Conflicted transitions
             (ItemState::Conflicted, ItemState::Hydrated) => true, // after resolution
+            (ItemState::Conflicted, ItemState::Pinned) => true,
             (ItemState::Conflicted, ItemState::Error(_)) => true,
 
             // All other transitions are invalid
@@ -791,11 +867,39 @@ impl SyncItem {
 
     /// Convenience method to start hydrating (downloading)
     pub fn start_hydrating(&mut self) -> Result<(), DomainError> {
+        self.hydration_progress = Some(0);
         self.transition_to(ItemState::Hydrating)
     }
 
     /// Convenience method to complete hydration
     pub fn complete_hydration(&mut self) -> Result<(), DomainError> {
+        self.hydration_progress = None;
+        self.transition_to(ItemState::Hydrated)
+    }
+
+    /// Convenience method to pin an item (always keep on device)
+    ///
+    /// Validates that the item is in the `Hydrated` state before transitioning to `Pinned`.
+    pub fn pin(&mut self) -> Result<(), DomainError> {
+        if !matches!(self.state, ItemState::Hydrated) {
+            return Err(DomainError::InvalidState {
+                from: self.state.name().to_string(),
+                to: "Pinned".to_string(),
+            });
+        }
+        self.transition_to(ItemState::Pinned)
+    }
+
+    /// Convenience method to unpin an item (allow dehydration)
+    ///
+    /// Validates that the item is in the `Pinned` state before transitioning to `Hydrated`.
+    pub fn unpin(&mut self) -> Result<(), DomainError> {
+        if !matches!(self.state, ItemState::Pinned) {
+            return Err(DomainError::InvalidState {
+                from: self.state.name().to_string(),
+                to: "Hydrated".to_string(),
+            });
+        }
         self.transition_to(ItemState::Hydrated)
     }
 
@@ -845,12 +949,37 @@ impl SyncItem {
 
         self.transition_to(target)
     }
+
+    /// Resets state during crash recovery.
+    ///
+    /// This method bypasses normal state machine validation because it's used
+    /// to recover from stale states left by a crash. The previous state was never
+    /// properly completed, so normal transition rules don't apply.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - The state to reset to (typically `Online`)
+    ///
+    /// # Safety
+    ///
+    /// This method should only be called during initialization when recovering
+    /// from a crash. Using it during normal operation could leave the system
+    /// in an inconsistent state.
+    pub fn reset_state_for_crash_recovery(&mut self, target: ItemState) {
+        // Clear any hydration progress since we're resetting
+        self.hydration_progress = None;
+        // Clear error info if we had one
+        self.error_info = None;
+        // Force the state change, bypassing validation
+        self.state = target;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     fn create_test_sync_item() -> SyncItem {
         let local_path = SyncPath::new(PathBuf::from("/home/user/OneDrive/test.txt")).unwrap();
@@ -927,6 +1056,35 @@ mod tests {
         #[test]
         fn test_default() {
             assert_eq!(ItemState::default(), ItemState::Online);
+        }
+
+        #[test]
+        fn test_is_pinned() {
+            assert!(ItemState::Pinned.is_pinned());
+            assert!(!ItemState::Online.is_pinned());
+            assert!(!ItemState::Hydrating.is_pinned());
+            assert!(!ItemState::Hydrated.is_pinned());
+            assert!(!ItemState::Modified.is_pinned());
+            assert!(!ItemState::Conflicted.is_pinned());
+            assert!(!ItemState::Error("test".to_string()).is_pinned());
+            assert!(!ItemState::Deleted.is_pinned());
+        }
+
+        #[test]
+        fn test_can_dehydrate() {
+            assert!(ItemState::Hydrated.can_dehydrate());
+            assert!(!ItemState::Online.can_dehydrate());
+            assert!(!ItemState::Hydrating.can_dehydrate());
+            assert!(!ItemState::Pinned.can_dehydrate());
+            assert!(!ItemState::Modified.can_dehydrate());
+            assert!(!ItemState::Conflicted.can_dehydrate());
+            assert!(!ItemState::Error("test".to_string()).can_dehydrate());
+            assert!(!ItemState::Deleted.can_dehydrate());
+        }
+
+        #[test]
+        fn test_is_local_with_pinned() {
+            assert!(ItemState::Pinned.is_local());
         }
     }
 
@@ -1352,6 +1510,42 @@ mod tests {
         }
 
         #[test]
+        fn test_pin_unpin_flow() {
+            let mut item = create_test_sync_item();
+
+            // Hydrate and pin
+            item.start_hydrating().unwrap();
+            item.complete_hydration().unwrap();
+            item.pin().unwrap();
+            assert!(matches!(item.state(), ItemState::Pinned));
+
+            // Unpin should transition to Hydrated
+            item.unpin().unwrap();
+            assert!(matches!(item.state(), ItemState::Hydrated));
+
+            // Can dehydrate after unpin
+            item.dehydrate().unwrap();
+            assert!(matches!(item.state(), ItemState::Online));
+        }
+
+        #[test]
+        fn test_can_transition_from_pinned() {
+            let mut item = create_test_sync_item();
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.transition_to(ItemState::Pinned).unwrap();
+
+            // Valid transitions from Pinned
+            assert!(item.can_transition_to(&ItemState::Hydrated)); // unpin
+            assert!(item.can_transition_to(&ItemState::Modified));
+            assert!(item.can_transition_to(&ItemState::Error("test".to_string())));
+            assert!(item.can_transition_to(&ItemState::Deleted));
+
+            // Invalid transitions from Pinned (cannot dehydrate directly)
+            assert!(!item.can_transition_to(&ItemState::Online));
+            assert!(!item.can_transition_to(&ItemState::Hydrating));
+        }
+
+        #[test]
         fn test_conflict_flow() {
             let mut item = create_test_sync_item();
 
@@ -1387,6 +1581,122 @@ mod tests {
             // The retry_to method should increment the retry count before clearing
             item.retry_to(ItemState::Online).unwrap();
             // After successful retry, error_info is cleared
+            assert!(item.error_info().is_none());
+        }
+
+        #[test]
+        fn test_transition_hydrated_to_pinned() {
+            let mut item = create_test_sync_item();
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.transition_to(ItemState::Hydrated).unwrap();
+
+            // Hydrated -> Pinned should be valid
+            assert!(item.can_transition_to(&ItemState::Pinned));
+            assert!(item.transition_to(ItemState::Pinned).is_ok());
+            assert!(matches!(item.state(), ItemState::Pinned));
+        }
+
+        #[test]
+        fn test_transition_pinned_to_hydrated() {
+            let mut item = create_test_sync_item();
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.transition_to(ItemState::Hydrated).unwrap();
+            item.transition_to(ItemState::Pinned).unwrap();
+
+            // Pinned -> Hydrated should be valid (unpin)
+            assert!(item.can_transition_to(&ItemState::Hydrated));
+            assert!(item.transition_to(ItemState::Hydrated).is_ok());
+            assert!(matches!(item.state(), ItemState::Hydrated));
+        }
+
+        #[test]
+        fn test_transition_pinned_to_modified() {
+            let mut item = create_test_sync_item();
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.transition_to(ItemState::Hydrated).unwrap();
+            item.transition_to(ItemState::Pinned).unwrap();
+
+            // Pinned -> Modified should be valid
+            assert!(item.can_transition_to(&ItemState::Modified));
+            assert!(item.transition_to(ItemState::Modified).is_ok());
+            assert!(matches!(item.state(), ItemState::Modified));
+        }
+
+        #[test]
+        fn test_transition_modified_to_pinned() {
+            let mut item = create_test_sync_item();
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.transition_to(ItemState::Hydrated).unwrap();
+            item.transition_to(ItemState::Modified).unwrap();
+
+            // Modified -> Pinned should be valid
+            assert!(item.can_transition_to(&ItemState::Pinned));
+            assert!(item.transition_to(ItemState::Pinned).is_ok());
+            assert!(matches!(item.state(), ItemState::Pinned));
+        }
+
+        #[test]
+        fn test_transition_pinned_to_deleted() {
+            let mut item = create_test_sync_item();
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.transition_to(ItemState::Hydrated).unwrap();
+            item.transition_to(ItemState::Pinned).unwrap();
+
+            // Pinned -> Deleted should be valid
+            assert!(item.can_transition_to(&ItemState::Deleted));
+            assert!(item.transition_to(ItemState::Deleted).is_ok());
+            assert!(matches!(item.state(), ItemState::Deleted));
+        }
+
+        #[test]
+        fn test_transition_online_to_pinned_invalid() {
+            let mut item = create_test_sync_item();
+
+            // Online -> Pinned should be INVALID (must go through Hydrating first)
+            assert!(!item.can_transition_to(&ItemState::Pinned));
+            let result = item.transition_to(ItemState::Pinned);
+            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap_err(),
+                DomainError::InvalidState { .. }
+            ));
+            assert!(matches!(item.state(), ItemState::Online));
+        }
+
+        #[test]
+        fn test_reset_state_for_crash_recovery() {
+            let mut item = create_test_sync_item();
+
+            // Start hydrating
+            item.transition_to(ItemState::Hydrating).unwrap();
+            item.set_hydration_progress(Some(50));
+            assert!(matches!(item.state(), ItemState::Hydrating));
+            assert_eq!(item.hydration_progress(), Some(50));
+
+            // Normal transition Hydrating -> Online is invalid
+            assert!(!item.can_transition_to(&ItemState::Online));
+
+            // But crash recovery can reset to Online
+            item.reset_state_for_crash_recovery(ItemState::Online);
+
+            assert!(matches!(item.state(), ItemState::Online));
+            // Hydration progress should be cleared
+            assert_eq!(item.hydration_progress(), None);
+        }
+
+        #[test]
+        fn test_reset_state_for_crash_recovery_clears_error_info() {
+            let mut item = create_test_sync_item();
+
+            // Set to error state
+            let error = ErrorInfo::new("E001", "Test error");
+            item.transition_to_error(error).unwrap();
+            assert!(item.error_info().is_some());
+
+            // Crash recovery should clear error info
+            item.reset_state_for_crash_recovery(ItemState::Online);
+
+            assert!(matches!(item.state(), ItemState::Online));
             assert!(item.error_info().is_none());
         }
     }

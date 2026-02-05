@@ -14,26 +14,29 @@
 //! Transient errors (network, rate limiting, server errors) are retried with
 //! exponential backoff: 1s, 2s, 4s, 8s, 16s (max 5 retries).
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use lnxdrive_core::{
+    config::Config,
+    domain::{
+        newtypes::{DeltaToken, FileHash, RemoteId, RemotePath, SyncPath},
+        session::SyncSession,
+        sync_item::SyncItem,
+    },
+    ports::{
+        cloud_provider::{DeltaItem, ICloudProvider},
+        local_filesystem::ILocalFileSystem,
+        state_repository::IStateRepository,
+    },
+};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-
-use lnxdrive_core::config::Config;
-use lnxdrive_core::domain::newtypes::{DeltaToken, FileHash, RemoteId, RemotePath, SyncPath};
-use lnxdrive_core::domain::session::SyncSession;
-use lnxdrive_core::domain::sync_item::SyncItem;
-use lnxdrive_core::ports::cloud_provider::{DeltaItem, ICloudProvider};
-use lnxdrive_core::ports::local_filesystem::ILocalFileSystem;
-use lnxdrive_core::ports::state_repository::IStateRepository;
 
 // ============================================================================
 // T186: FileWatcher integration - re-export ChangeEvent from watcher module
 // ============================================================================
-
 pub use crate::watcher::ChangeEvent;
 
 // ============================================================================
@@ -994,11 +997,21 @@ impl SyncEngine {
             .context("Failed to query all sync items")?;
 
         for item in all_items {
-            // Skip already-deleted items
+            // T070: Handle items marked as Deleted by FUSE (unlink/rmdir)
+            // These items need to be deleted from the cloud
             if matches!(
                 item.state(),
                 lnxdrive_core::domain::sync_item::ItemState::Deleted
             ) {
+                // If the item has a remote_id, it needs to be deleted from the cloud
+                if item.remote_id().is_some() {
+                    debug!(
+                        path = %item.local_path(),
+                        "Item marked as Deleted by FUSE, will remove from cloud"
+                    );
+                    changes.push(LocalChange::Deleted(item));
+                }
+                // Items without remote_id (never synced) can be skipped
                 continue;
             }
 
@@ -1401,8 +1414,9 @@ fn extract_token_from_delta_link(delta_link: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     #[test]
     fn test_split_remote_path_root_file() {

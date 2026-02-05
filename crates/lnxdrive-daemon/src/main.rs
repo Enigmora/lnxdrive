@@ -12,26 +12,21 @@
 //! that periodically runs the SyncEngine. The loop is controlled by a
 //! `CancellationToken` that is triggered on receipt of SIGTERM or SIGINT.
 
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
+use lnxdrive_core::{config::Config, ports::state_repository::IStateRepository};
+use lnxdrive_fuse::{mount, unmount, BackgroundSession};
+use lnxdrive_graph::{
+    auth::KeyringTokenStorage, client::GraphClient, provider::GraphCloudProvider,
+};
+use lnxdrive_ipc::service::{DaemonState, DaemonSyncState, DbusService, DBUS_NAME};
+use lnxdrive_sync::{engine::SyncEngine, filesystem::LocalFileSystemAdapter};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-
-use lnxdrive_cache::pool::DatabasePool;
-use lnxdrive_cache::SqliteStateRepository;
-use lnxdrive_core::config::Config;
-use lnxdrive_core::ports::state_repository::IStateRepository;
-use lnxdrive_graph::auth::KeyringTokenStorage;
-use lnxdrive_graph::client::GraphClient;
-use lnxdrive_graph::provider::GraphCloudProvider;
-use lnxdrive_ipc::service::{DaemonState, DaemonSyncState, DbusService, DBUS_NAME};
-use lnxdrive_sync::engine::SyncEngine;
-use lnxdrive_sync::filesystem::LocalFileSystemAdapter;
 
 // ============================================================================
 // T214: DaemonService struct
@@ -46,10 +41,14 @@ struct DaemonService {
     config: Config,
     /// SQLite state repository for sync state persistence
     state_repo: Arc<SqliteStateRepository>,
+    /// Database pool (needed for FUSE mount)
+    db_pool: DatabasePool,
     /// Shared state between daemon and D-Bus interfaces
     daemon_state: Arc<Mutex<DaemonState>>,
     /// Token for signalling graceful shutdown to all async tasks
     shutdown: CancellationToken,
+    /// T095: FUSE session handle (when auto-mounted)
+    fuse_session: std::sync::Mutex<Option<BackgroundSession>>,
 }
 
 impl DaemonService {
@@ -73,18 +72,20 @@ impl DaemonService {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let pool = DatabasePool::new(Path::new(&db_path))
+        let db_pool = DatabasePool::new(Path::new(&db_path))
             .await
             .context("Failed to open database")?;
-        let state_repo = Arc::new(SqliteStateRepository::new(pool.pool().clone()));
+        let state_repo = Arc::new(SqliteStateRepository::new(db_pool.pool().clone()));
 
         let daemon_state = Arc::new(Mutex::new(DaemonState::default()));
 
         Ok(Self {
             config,
             state_repo,
+            db_pool,
             daemon_state,
             shutdown,
+            fuse_session: std::sync::Mutex::new(None),
         })
     }
 
@@ -191,8 +192,75 @@ impl DaemonService {
             &self.config,
         );
 
+        // T095: Auto-mount FUSE filesystem if enabled
+        if self.config.fuse.auto_mount {
+            self.mount_fuse();
+        }
+
         // T216: Enter periodic polling loop
-        self.sync_loop(&engine).await
+        let result = self.sync_loop(&engine).await;
+
+        // T095: Unmount FUSE on shutdown
+        self.unmount_fuse();
+
+        result
+    }
+
+    // ========================================================================
+    // T095: FUSE Auto-Mount
+    // ========================================================================
+
+    /// Mounts the FUSE filesystem if auto_mount is enabled.
+    ///
+    /// Clones the database pool for the FUSE layer and mounts
+    /// the filesystem at the configured mount point. The session handle
+    /// is stored for graceful unmount during shutdown.
+    fn mount_fuse(&self) {
+        info!(
+            mount_point = %self.config.fuse.mount_point,
+            "Auto-mounting FUSE filesystem"
+        );
+
+        // Clone the database pool for FUSE (pool is thread-safe)
+        let fuse_pool = self.db_pool.clone();
+
+        let rt_handle = tokio::runtime::Handle::current();
+
+        match mount(self.config.fuse.clone(), fuse_pool, rt_handle) {
+            Ok(session) => {
+                info!(
+                    mount_point = %self.config.fuse.mount_point,
+                    "FUSE filesystem mounted successfully"
+                );
+                if let Ok(mut guard) = self.fuse_session.lock() {
+                    *guard = Some(session);
+                }
+            }
+            Err(e) => {
+                error!(
+                    mount_point = %self.config.fuse.mount_point,
+                    error = %e,
+                    "Failed to mount FUSE filesystem"
+                );
+            }
+        }
+    }
+
+    /// Unmounts the FUSE filesystem if it was auto-mounted.
+    ///
+    /// Takes ownership of the session handle and drops it, triggering
+    /// the kernel unmount operation.
+    fn unmount_fuse(&self) {
+        if let Ok(mut guard) = self.fuse_session.lock() {
+            if let Some(session) = guard.take() {
+                info!(
+                    mount_point = %self.config.fuse.mount_point,
+                    "Unmounting FUSE filesystem"
+                );
+                unmount(session);
+                info!("FUSE filesystem unmounted");
+            }
+        }
     }
 
     // ========================================================================

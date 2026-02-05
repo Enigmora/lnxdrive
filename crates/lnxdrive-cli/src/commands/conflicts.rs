@@ -5,8 +5,10 @@
 //! 2. Resolves a specific conflict by ID with a chosen strategy
 //! 3. Previews conflict details showing local vs remote metadata
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -51,8 +53,7 @@ impl ConflictsCommand {
         &self,
         formatter: &dyn crate::output::OutputFormatter,
     ) -> Result<Option<Arc<lnxdrive_cache::SqliteStateRepository>>> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
 
         let db_path = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -162,8 +163,10 @@ impl ConflictsCommand {
 
     /// T239: Resolve a conflict by ID
     async fn execute_resolve(&self, id: &str, strategy: &str, format: OutputFormat) -> Result<()> {
-        use lnxdrive_core::domain::conflict::{Resolution, ResolutionSource};
-        use lnxdrive_core::ports::state_repository::IStateRepository;
+        use lnxdrive_core::{
+            domain::conflict::{Resolution, ResolutionSource},
+            ports::state_repository::IStateRepository,
+        };
 
         let formatter = get_formatter(matches!(format, OutputFormat::Json));
 

@@ -22,9 +22,11 @@
 //! # }
 //! ```
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 
 use tracing::{debug, info, warn};
 
@@ -490,8 +492,9 @@ pub fn parse_retry_after(value: &str, default: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
+    use super::*;
 
     // ====================================================================
     // TokenBucket tests

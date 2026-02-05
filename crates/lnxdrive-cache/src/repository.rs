@@ -24,22 +24,22 @@
 //! | AuditAction         | TEXT     | serde_json serialization    |
 //! | AuditResult         | TEXT     | serde_json serialization    |
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::SqliteRow;
-use sqlx::{Row, SqlitePool};
-
-use lnxdrive_core::domain::{
-    newtypes::{AccountId, ConflictId, DeltaToken, Email, RemoteId, SessionId, SyncPath, UniqueId},
-    session::{SessionError, SessionStatus},
-    sync_item::ItemState,
-    Account, AccountState, AuditAction, AuditEntry, AuditResult, Conflict, Resolution,
-    ResolutionSource, SyncItem, SyncSession, VersionInfo,
+use lnxdrive_core::{
+    domain::{
+        newtypes::{
+            AccountId, ConflictId, DeltaToken, Email, RemoteId, SessionId, SyncPath, UniqueId,
+        },
+        session::{SessionError, SessionStatus},
+        sync_item::ItemState,
+        Account, AccountState, AuditAction, AuditEntry, AuditResult, Conflict, Resolution,
+        ResolutionSource, SyncItem, SyncSession, VersionInfo,
+    },
+    ports::{IStateRepository, ItemFilter},
 };
-use lnxdrive_core::ports::{IStateRepository, ItemFilter};
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
 use crate::CacheError;
 
@@ -71,6 +71,7 @@ fn item_state_to_string(state: &ItemState) -> String {
         ItemState::Online => "online".to_string(),
         ItemState::Hydrating => "hydrating".to_string(),
         ItemState::Hydrated => "hydrated".to_string(),
+        ItemState::Pinned => "pinned".to_string(),
         ItemState::Modified => "modified".to_string(),
         ItemState::Conflicted => "conflicted".to_string(),
         ItemState::Deleted => "deleted".to_string(),
@@ -84,6 +85,7 @@ fn item_state_from_string(s: &str) -> Result<ItemState, CacheError> {
         "online" => Ok(ItemState::Online),
         "hydrating" => Ok(ItemState::Hydrating),
         "hydrated" => Ok(ItemState::Hydrated),
+        "pinned" => Ok(ItemState::Pinned),
         "modified" => Ok(ItemState::Modified),
         "conflicted" => Ok(ItemState::Conflicted),
         "deleted" => Ok(ItemState::Deleted),
@@ -197,6 +199,7 @@ fn sync_item_from_row(row: &SqliteRow) -> Result<SyncItem, CacheError> {
         ItemState::Online => serde_json::Value::String("online".to_string()),
         ItemState::Hydrating => serde_json::Value::String("hydrating".to_string()),
         ItemState::Hydrated => serde_json::Value::String("hydrated".to_string()),
+        ItemState::Pinned => serde_json::Value::String("pinned".to_string()),
         ItemState::Modified => serde_json::Value::String("modified".to_string()),
         ItemState::Conflicted => serde_json::Value::String("conflicted".to_string()),
         ItemState::Deleted => serde_json::Value::String("deleted".to_string()),
@@ -1007,5 +1010,166 @@ impl IStateRepository for SqliteStateRepository {
         }
 
         Ok(conflicts)
+    }
+
+    // --- FUSE inode operations ---
+
+    /// Atomically get the next available inode number
+    ///
+    /// This method returns the current counter value and increments it atomically.
+    /// The operation is atomic to ensure no two items receive the same inode.
+    /// Note: Inode 1 is reserved for the FUSE root directory.
+    async fn get_next_inode(&self) -> anyhow::Result<u64> {
+        // Use a transaction to atomically read-then-increment
+        let mut tx = self.pool.begin().await?;
+
+        // Get the current value
+        let row = sqlx::query("SELECT next_inode FROM inode_counter WHERE id = 1")
+            .fetch_one(&mut *tx)
+            .await?;
+        let current_inode: i64 = row.get("next_inode");
+
+        // Increment for next call
+        sqlx::query("UPDATE inode_counter SET next_inode = next_inode + 1 WHERE id = 1")
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
+
+        tracing::trace!(inode = current_inode, "Allocated new inode");
+        Ok(current_inode as u64)
+    }
+
+    /// Set the inode on a sync item
+    ///
+    /// Associates a FUSE inode number with a sync item for filesystem operations.
+    async fn update_inode(&self, item_id: &UniqueId, inode: u64) -> anyhow::Result<()> {
+        let id_str = item_id.to_string();
+        let inode_i64 = inode as i64;
+
+        let result = sqlx::query("UPDATE sync_items SET inode = ? WHERE id = ?")
+            .bind(inode_i64)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("Item not found: {}", id_str);
+        }
+
+        tracing::trace!(item_id = %id_str, inode, "Updated item inode");
+        Ok(())
+    }
+
+    /// Look up a sync item by its inode number
+    ///
+    /// Used by FUSE to resolve inode references back to domain items.
+    async fn get_item_by_inode(&self, inode: u64) -> anyhow::Result<Option<SyncItem>> {
+        let inode_i64 = inode as i64;
+
+        let row = sqlx::query("SELECT * FROM sync_items WHERE inode = ?")
+            .bind(inode_i64)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(ref r) => Ok(Some(sync_item_from_row(r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Update the last accessed timestamp for a sync item
+    ///
+    /// Used to track file access patterns for dehydration decisions.
+    async fn update_last_accessed(
+        &self,
+        item_id: &UniqueId,
+        accessed: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        let id_str = item_id.to_string();
+        let accessed_str = accessed.to_rfc3339();
+
+        let result = sqlx::query("UPDATE sync_items SET last_accessed = ? WHERE id = ?")
+            .bind(&accessed_str)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("Item not found: {}", id_str);
+        }
+
+        tracing::trace!(item_id = %id_str, accessed = %accessed_str, "Updated last accessed");
+        Ok(())
+    }
+
+    /// Update the hydration progress percentage for a sync item
+    ///
+    /// Tracks download progress for files being hydrated from the cloud.
+    /// Progress is stored as 0-100, or None if not currently hydrating.
+    async fn update_hydration_progress(
+        &self,
+        item_id: &UniqueId,
+        progress: Option<u8>,
+    ) -> anyhow::Result<()> {
+        let id_str = item_id.to_string();
+        let progress_i64 = progress.map(|p| p as i64);
+
+        let result = sqlx::query("UPDATE sync_items SET hydration_progress = ? WHERE id = ?")
+            .bind(progress_i64)
+            .bind(&id_str)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            anyhow::bail!("Item not found: {}", id_str);
+        }
+
+        tracing::trace!(item_id = %id_str, progress = ?progress, "Updated hydration progress");
+        Ok(())
+    }
+
+    /// Get sync items that are candidates for dehydration
+    ///
+    /// Returns items that:
+    /// - Are currently hydrated (state = 'hydrated')
+    /// - Have not been accessed recently (last_accessed older than max_age_days)
+    /// - Are not pinned, modified, or deleted
+    /// - Are sorted by least recently accessed first
+    ///
+    /// This allows implementing an LRU-based dehydration policy to reclaim disk space.
+    async fn get_items_for_dehydration(
+        &self,
+        max_age_days: u32,
+        limit: u32,
+    ) -> anyhow::Result<Vec<SyncItem>> {
+        // Calculate the cutoff timestamp
+        let cutoff = Utc::now() - chrono::Duration::days(max_age_days as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let rows = sqlx::query(
+            "SELECT * FROM sync_items \
+             WHERE state = 'hydrated' \
+               AND last_accessed < ? \
+               AND last_accessed IS NOT NULL \
+             ORDER BY last_accessed ASC \
+             LIMIT ?",
+        )
+        .bind(&cutoff_str)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            items.push(sync_item_from_row(row)?);
+        }
+
+        tracing::debug!(
+            count = items.len(),
+            max_age_days,
+            "Retrieved dehydration candidates"
+        );
+        Ok(items)
     }
 }

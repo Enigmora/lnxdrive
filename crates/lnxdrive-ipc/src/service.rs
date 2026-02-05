@@ -10,6 +10,7 @@
 //! Signals are emitted on state changes, sync progress, and errors.
 
 use std::sync::Arc;
+
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 

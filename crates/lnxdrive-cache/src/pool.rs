@@ -19,6 +19,7 @@ use crate::CacheError;
 /// - 5 max connections for file-based databases
 /// - 1 connection for in-memory databases (required for data persistence)
 /// - 5-second busy timeout to handle write contention
+#[derive(Clone)]
 pub struct DatabasePool {
     pool: SqlitePool,
 }
@@ -115,15 +116,68 @@ impl DatabasePool {
         &self.pool
     }
 
-    /// Runs the initial schema migration
+    /// Runs all schema migrations in order
     async fn run_migrations(pool: &SqlitePool) -> Result<(), CacheError> {
-        let migration_sql = include_str!("migrations/20260203_initial.sql");
-        sqlx::raw_sql(migration_sql)
-            .execute(pool)
-            .await
-            .map_err(|e| {
-                CacheError::MigrationFailed(format!("Failed to run initial migration: {}", e))
+        // Create migration tracking table
+        sqlx::raw_sql(
+            "CREATE TABLE IF NOT EXISTS _migrations (
+                name TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            CacheError::MigrationFailed(format!("Failed to create migrations table: {}", e))
+        })?;
+
+        // Define migrations in chronological order
+        let migrations = [
+            (
+                "20260203_initial",
+                include_str!("migrations/20260203_initial.sql"),
+            ),
+            (
+                "20260204_fuse_support",
+                include_str!("migrations/20260204_fuse_support.sql"),
+            ),
+        ];
+
+        for (name, sql) in migrations {
+            // Check if migration was already applied
+            let applied: Option<(String,)> =
+                sqlx::query_as("SELECT name FROM _migrations WHERE name = ?")
+                    .bind(name)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| {
+                        CacheError::MigrationFailed(format!(
+                            "Failed to check migration status: {}",
+                            e
+                        ))
+                    })?;
+
+            if applied.is_some() {
+                tracing::debug!(migration = %name, "Migration already applied, skipping");
+                continue;
+            }
+
+            // Run the migration
+            sqlx::raw_sql(sql).execute(pool).await.map_err(|e| {
+                CacheError::MigrationFailed(format!("Failed to run migration {}: {}", name, e))
             })?;
+
+            // Record the migration as applied
+            sqlx::query("INSERT INTO _migrations (name) VALUES (?)")
+                .bind(name)
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    CacheError::MigrationFailed(format!("Failed to record migration: {}", e))
+                })?;
+
+            tracing::debug!(migration = %name, "Migration applied");
+        }
 
         tracing::debug!("Database migrations completed");
         Ok(())

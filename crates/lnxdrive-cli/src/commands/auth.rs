@@ -6,8 +6,7 @@
 //! 2. `logout` - Clears tokens from the keyring and suspends the account.
 //! 3. `status` - Shows current account info and token validity.
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
@@ -51,17 +50,17 @@ impl AuthCommand {
         cli_app_id: Option<&str>,
         fmt: &dyn crate::output::OutputFormatter,
     ) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
-        use lnxdrive_core::config::Config;
-        use lnxdrive_core::domain::{
-            Account, AuditAction, AuditEntry, AuditResult, Email, SyncPath,
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
+        use lnxdrive_core::{
+            config::Config,
+            domain::{Account, AuditAction, AuditEntry, AuditResult, Email, SyncPath},
+            ports::{cloud_provider::ICloudProvider, state_repository::IStateRepository},
         };
-        use lnxdrive_core::ports::cloud_provider::ICloudProvider;
-        use lnxdrive_core::ports::state_repository::IStateRepository;
-        use lnxdrive_graph::auth::{GraphAuthAdapter, KeyringTokenStorage};
-        use lnxdrive_graph::client::GraphClient;
-        use lnxdrive_graph::provider::GraphCloudProvider;
+        use lnxdrive_graph::{
+            auth::{GraphAuthAdapter, KeyringTokenStorage},
+            client::GraphClient,
+            provider::GraphCloudProvider,
+        };
 
         // Step 1: Load config to get app_id
         let config_path = Config::default_path();
@@ -70,9 +69,7 @@ impl AuthCommand {
         let app_id = cli_app_id
             .map(|s| s.to_string())
             .or(config.auth.app_id.clone())
-            .context(
-                "No app_id provided. Use --app-id flag or set auth.app_id in config.yaml",
-            )?;
+            .context("No app_id provided. Use --app-id flag or set auth.app_id in config.yaml")?;
 
         info!(app_id = %app_id, "Starting OAuth2 login");
 
@@ -111,18 +108,12 @@ impl AuthCommand {
             .context("Failed to open database")?;
         let state_repo = Arc::new(SqliteStateRepository::new(pool.pool().clone()));
 
-        let email = Email::new(user_info.email.clone())
-            .context("Invalid email from Graph API")?;
+        let email = Email::new(user_info.email.clone()).context("Invalid email from Graph API")?;
 
-        let sync_root = SyncPath::new(config.sync.root.clone())
-            .context("Invalid sync root path in config")?;
+        let sync_root =
+            SyncPath::new(config.sync.root.clone()).context("Invalid sync root path in config")?;
 
-        let mut account = Account::new(
-            email,
-            &user_info.display_name,
-            &user_info.id,
-            sync_root,
-        );
+        let mut account = Account::new(email, &user_info.display_name, &user_info.id, sync_root);
         account.update_quota(user_info.quota_used, user_info.quota_total);
 
         state_repo
@@ -167,14 +158,12 @@ impl AuthCommand {
     /// 2. Clear tokens from keyring
     /// 3. Suspend account in DB
     /// 4. Record audit entry
-    async fn execute_logout(
-        &self,
-        fmt: &dyn crate::output::OutputFormatter,
-    ) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
-        use lnxdrive_core::domain::{AuditAction, AuditEntry, AuditResult};
-        use lnxdrive_core::ports::state_repository::IStateRepository;
+    async fn execute_logout(&self, fmt: &dyn crate::output::OutputFormatter) -> Result<()> {
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
+        use lnxdrive_core::{
+            domain::{AuditAction, AuditEntry, AuditResult},
+            ports::state_repository::IStateRepository,
+        };
         use lnxdrive_graph::auth::KeyringTokenStorage;
 
         // Step 1: Open database and get default account
@@ -205,8 +194,7 @@ impl AuthCommand {
         info!(email = %email, "Logging out");
 
         // Step 2: Clear tokens from keyring
-        KeyringTokenStorage::clear(&email)
-            .context("Failed to clear tokens from keyring")?;
+        KeyringTokenStorage::clear(&email).context("Failed to clear tokens from keyring")?;
 
         // Step 3: Suspend account
         account.suspend();
@@ -241,8 +229,7 @@ impl AuthCommand {
         fmt: &dyn crate::output::OutputFormatter,
         format: OutputFormat,
     ) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
         use lnxdrive_core::ports::state_repository::IStateRepository;
         use lnxdrive_graph::auth::KeyringTokenStorage;
 
@@ -328,7 +315,10 @@ impl AuthCommand {
             ));
 
             if let Some(last_sync) = account.last_sync() {
-                fmt.info(&format!("Last sync:     {}", last_sync.format("%Y-%m-%d %H:%M:%S UTC")));
+                fmt.info(&format!(
+                    "Last sync:     {}",
+                    last_sync.format("%Y-%m-%d %H:%M:%S UTC")
+                ));
             } else {
                 fmt.info("Last sync:     Never");
             }

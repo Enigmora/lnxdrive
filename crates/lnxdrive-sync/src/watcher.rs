@@ -16,13 +16,17 @@
 //!  FileWatcher  ──→  mpsc::channel  ──→  DebouncedChangeQueue  ──→  SyncScheduler
 //! ```
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
-use notify::event::{ModifyKind, RenameMode};
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    event::{ModifyKind, RenameMode},
+    EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -451,8 +455,9 @@ impl DebouncedChangeQueue {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     // ------------------------------------------------------------------
     // ChangeEvent construction tests

@@ -6,8 +6,10 @@
 //! 3. Provides actionable suggestions based on the state/error
 //! 4. Shows recent audit history for the file
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -25,10 +27,8 @@ pub struct ExplainCommand {
 impl ExplainCommand {
     /// T195-T198: Execute the explain command
     pub async fn execute(&self, format: OutputFormat) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
-        use lnxdrive_core::domain::newtypes::SyncPath;
-        use lnxdrive_core::usecases::ExplainFailureUseCase;
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
+        use lnxdrive_core::{domain::newtypes::SyncPath, usecases::ExplainFailureUseCase};
 
         let formatter = get_formatter(matches!(format, OutputFormat::Json));
 

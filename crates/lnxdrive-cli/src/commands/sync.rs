@@ -6,8 +6,7 @@
 //! 3. Creates the necessary adapters (Graph, SQLite, filesystem)
 //! 4. Runs the SyncEngine and displays results with progress
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -33,14 +32,12 @@ impl SyncCommand {
     /// Wires up all adapters, creates the SyncEngine, runs sync(),
     /// and displays progress and results.
     pub async fn execute(&self, format: OutputFormat) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
         use lnxdrive_core::config::Config;
-        use lnxdrive_graph::auth::KeyringTokenStorage;
-        use lnxdrive_graph::client::GraphClient;
-        use lnxdrive_graph::provider::GraphCloudProvider;
-        use lnxdrive_sync::engine::SyncEngine;
-        use lnxdrive_sync::filesystem::LocalFileSystemAdapter;
+        use lnxdrive_graph::{
+            auth::KeyringTokenStorage, client::GraphClient, provider::GraphCloudProvider,
+        };
+        use lnxdrive_sync::{engine::SyncEngine, filesystem::LocalFileSystemAdapter};
 
         let formatter = get_formatter(matches!(format, OutputFormat::Json));
 

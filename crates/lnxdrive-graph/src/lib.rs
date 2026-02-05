@@ -21,6 +21,7 @@ pub mod rate_limit;
 pub mod upload;
 
 use std::time::Duration;
+
 use thiserror::Error;
 
 /// Errors that can occur when communicating with the Microsoft Graph API
