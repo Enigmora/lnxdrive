@@ -199,6 +199,12 @@ pub trait IStateRepository: Send + Sync {
     /// Returns conflicts ordered by detection time (newest first).
     async fn get_unresolved_conflicts(&self) -> anyhow::Result<Vec<Conflict>>;
 
+    /// Retrieves a specific conflict by its unique ID
+    async fn get_conflict_by_id(
+        &self,
+        id: &crate::domain::newtypes::ConflictId,
+    ) -> anyhow::Result<Option<Conflict>>;
+
     // --- FUSE inode operations ---
 
     /// Atomically get and increment the next available inode number

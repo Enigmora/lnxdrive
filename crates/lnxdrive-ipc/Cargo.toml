@@ -8,6 +8,8 @@ description = "D-Bus IPC library for LNXDrive clients"
 
 [dependencies]
 lnxdrive-core.workspace = true
+lnxdrive-conflict.workspace = true
+lnxdrive-cache.workspace = true
 zbus.workspace = true
 tokio.workspace = true
 serde.workspace = true

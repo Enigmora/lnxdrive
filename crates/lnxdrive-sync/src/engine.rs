@@ -18,12 +18,13 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use lnxdrive_conflict::{ConflictDetector, PolicyEngine};
 use lnxdrive_core::{
     config::Config,
     domain::{
         newtypes::{DeltaToken, FileHash, RemoteId, RemotePath, SyncPath},
         session::SyncSession,
-        sync_item::SyncItem,
+        sync_item::{ItemState, SyncItem},
     },
     ports::{
         cloud_provider::{DeltaItem, ICloudProvider},
@@ -52,6 +53,8 @@ pub struct SyncResult {
     pub files_uploaded: u32,
     /// Number of files deleted (locally or remotely)
     pub files_deleted: u32,
+    /// Number of conflicts detected during sync
+    pub files_conflicted: u32,
     /// Errors encountered during the sync (non-fatal)
     pub errors: Vec<String>,
     /// Wall-clock duration of the sync in milliseconds
@@ -182,6 +185,8 @@ enum DeltaAction {
     Updated,
     /// A file was deleted locally
     Deleted,
+    /// A conflict was detected between local and remote versions
+    Conflicted,
     /// No action was needed (unchanged or metadata-only update)
     Skipped,
 }
@@ -237,6 +242,8 @@ pub struct SyncEngine {
     /// - Delays are added between batches (2 seconds)
     /// - Rate limiting becomes more conservative
     bulk_mode: bool,
+    /// Conflict policy engine for auto-resolution rules
+    policy_engine: PolicyEngine,
 }
 
 impl SyncEngine {
@@ -253,6 +260,19 @@ impl SyncEngine {
         local_filesystem: Arc<dyn ILocalFileSystem + Send + Sync>,
         config: &Config,
     ) -> Self {
+        let conflict_rules: Vec<lnxdrive_conflict::ConflictRule> = config
+            .conflicts
+            .rules
+            .iter()
+            .map(|r| lnxdrive_conflict::ConflictRule {
+                pattern: r.pattern.clone(),
+                strategy: r.strategy.clone(),
+            })
+            .collect();
+
+        let policy_engine =
+            PolicyEngine::new(&config.conflicts.default_strategy, &conflict_rules);
+
         Self {
             cloud_provider,
             state_repository,
@@ -260,6 +280,7 @@ impl SyncEngine {
             large_file_threshold: config.large_files.threshold_mb * 1024 * 1024,
             watcher_rx: None,
             bulk_mode: false,
+            policy_engine,
         }
     }
 
@@ -393,6 +414,7 @@ impl SyncEngine {
             files_downloaded: 0,
             files_uploaded: 0,
             files_deleted: 0,
+            files_conflicted: 0,
             errors: Vec::new(),
             duration_ms: 0,
         };
@@ -498,6 +520,9 @@ impl SyncEngine {
                     DeltaAction::Updated => {
                         result.files_downloaded += 1;
                         items_synced += 1;
+                    }
+                    DeltaAction::Conflicted => {
+                        result.files_conflicted += 1;
                     }
                     DeltaAction::Skipped => {}
                 },
@@ -641,6 +666,7 @@ impl SyncEngine {
             downloaded = result.files_downloaded,
             uploaded = result.files_uploaded,
             deleted = result.files_deleted,
+            conflicted = result.files_conflicted,
             errors = result.errors.len(),
             duration_ms = result.duration_ms,
             "Sync cycle completed"
@@ -811,12 +837,17 @@ impl SyncEngine {
     ///
     /// Compares the remote content hash with the stored hash. If they differ,
     /// downloads the new content and updates the local file and SyncItem.
+    ///
+    /// **Conflict detection**: If the item is in `Modified` state (local changes
+    /// pending) AND the remote hash also differs, a conflict is detected instead
+    /// of blindly overwriting the local file. The conflict is saved and the item
+    /// is marked as `Conflicted`.
     #[tracing::instrument(skip(self))]
     async fn handle_remote_update(
         &self,
         delta_item: &DeltaItem,
         existing: &SyncItem,
-        _sync_root: &SyncPath,
+        sync_root: &SyncPath,
     ) -> Result<DeltaAction> {
         // For directories, just update metadata
         if delta_item.is_directory {
@@ -857,6 +888,78 @@ impl SyncEngine {
             return Ok(DeltaAction::Skipped);
         }
 
+        // ── Conflict detection ──────────────────────────────────────────
+        // If the item has local modifications AND the remote also changed,
+        // this is a true conflict — both sides diverged since last sync.
+        if matches!(existing.state(), ItemState::Modified) {
+            let detection = ConflictDetector::check_remote_update(
+                existing,
+                remote_hash_str,
+                delta_item.size,
+                delta_item.modified,
+                None, // etag not available in DeltaItem
+            );
+
+            if let lnxdrive_conflict::DetectionResult::Conflicted(conflict) = detection {
+                let conflict = *conflict;
+                info!(
+                    path = %existing.local_path(),
+                    conflict_id = %conflict.id(),
+                    "Conflict detected: local and remote both changed"
+                );
+
+                // Check if policy auto-resolves this conflict
+                let relative_path = existing
+                    .local_path()
+                    .relative_to(sync_root)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+
+                if let Some(auto_resolution) =
+                    ConflictDetector::should_auto_resolve(&self.policy_engine, &relative_path)
+                {
+                    info!(
+                        path = %existing.local_path(),
+                        resolution = %auto_resolution,
+                        "Auto-resolving conflict via policy"
+                    );
+                    // Auto-resolved conflicts are saved as resolved immediately
+                    let resolved = conflict.resolve(
+                        auto_resolution,
+                        lnxdrive_core::domain::conflict::ResolutionSource::Policy,
+                    );
+                    self.state_repository
+                        .save_conflict(&resolved)
+                        .await
+                        .context("Failed to save auto-resolved conflict")?;
+                    // Item stays in Modified — the normal download path will handle it
+                    // by falling through to the update logic below.
+                } else {
+                    // Persist the unresolved conflict
+                    self.state_repository
+                        .save_conflict(&conflict)
+                        .await
+                        .context("Failed to save conflict")?;
+
+                    // Mark the item as conflicted
+                    let mut conflicted_item = existing.clone();
+                    conflicted_item
+                        .mark_conflicted()
+                        .context("Failed to transition item to Conflicted state")?;
+                    if let Some(modified) = delta_item.modified {
+                        conflicted_item.set_last_modified_remote(modified);
+                    }
+                    self.state_repository
+                        .save_item(&conflicted_item)
+                        .await
+                        .context("Failed to save conflicted item")?;
+
+                    return Ok(DeltaAction::Conflicted);
+                }
+            }
+        }
+
+        // ── Normal update path (no conflict) ────────────────────────────
         debug!(
             path = %existing.local_path(),
             "Remote file content changed, downloading update"
@@ -1201,7 +1304,7 @@ impl SyncEngine {
                 let parent = parent_remote_path.clone();
                 let name = file_name.clone();
                 let d = data.clone();
-                async move { self.cloud_provider.upload_file(&parent, &name, &d).await }
+                async move { self.cloud_provider.upload_file(&parent, &name, &d, None).await }
             })
             .await
             .context("Failed to upload file")?
@@ -1307,7 +1410,7 @@ impl SyncEngine {
                 let parent = parent_remote_path.clone();
                 let name = file_name.clone();
                 let d = data.clone();
-                async move { self.cloud_provider.upload_file(&parent, &name, &d).await }
+                async move { self.cloud_provider.upload_file(&parent, &name, &d, None).await }
             })
             .await?
         };
@@ -1496,6 +1599,7 @@ mod tests {
             files_downloaded: 0,
             files_uploaded: 0,
             files_deleted: 0,
+            files_conflicted: 0,
             errors: Vec::new(),
             duration_ms: 0,
         };

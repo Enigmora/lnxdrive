@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+use lnxdrive_core::ports::state_repository::IStateRepository;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -63,8 +64,6 @@ pub struct DaemonState {
     pub account_display_name: Option<String>,
     /// Last sync result summary (JSON)
     pub last_sync_result: Option<String>,
-    /// Unresolved conflicts as JSON array
-    pub conflicts_json: String,
 }
 
 impl Default for DaemonState {
@@ -75,7 +74,6 @@ impl Default for DaemonState {
             account_email: None,
             account_display_name: None,
             last_sync_result: None,
-            conflicts_json: "[]".to_string(),
         }
     }
 }
@@ -226,16 +224,25 @@ impl AccountInterface {
 
 /// D-Bus interface for conflict management
 ///
-/// Provides methods to list unresolved conflicts and resolve them
-/// using a specified strategy.
+/// Provides methods to list unresolved conflicts, resolve them using a
+/// specified strategy, and query individual conflict details. Uses the
+/// real `IStateRepository` for persistent conflict data.
 pub struct ConflictsInterface {
+    #[allow(dead_code)]
     state: Arc<Mutex<DaemonState>>,
+    state_repository: Arc<dyn IStateRepository>,
 }
 
 impl ConflictsInterface {
-    /// Creates a new ConflictsInterface with the given shared state
-    pub fn new(state: Arc<Mutex<DaemonState>>) -> Self {
-        Self { state }
+    /// Creates a new ConflictsInterface with state repository
+    pub fn new(
+        state: Arc<Mutex<DaemonState>>,
+        state_repository: Arc<dyn IStateRepository>,
+    ) -> Self {
+        Self {
+            state,
+            state_repository,
+        }
     }
 }
 
@@ -243,10 +250,81 @@ impl ConflictsInterface {
 impl ConflictsInterface {
     /// Returns a JSON array of unresolved conflicts
     ///
-    /// Each conflict contains its ID, file path, and detection timestamp.
+    /// Each conflict contains its ID, item_id, detection timestamp, and
+    /// version metadata for both local and remote sides.
     async fn list(&self) -> String {
-        let state = self.state.lock().await;
-        state.conflicts_json.clone()
+        match self.state_repository.get_unresolved_conflicts().await {
+            Ok(conflicts) => {
+                let json: Vec<serde_json::Value> = conflicts
+                    .iter()
+                    .map(|c| {
+                        serde_json::json!({
+                            "id": c.id().to_string(),
+                            "item_id": c.item_id().to_string(),
+                            "detected_at": c.detected_at().to_rfc3339(),
+                            "local_version": {
+                                "hash": c.local_version().hash().to_string(),
+                                "size_bytes": c.local_version().size_bytes(),
+                                "modified_at": c.local_version().modified_at().to_rfc3339(),
+                            },
+                            "remote_version": {
+                                "hash": c.remote_version().hash().to_string(),
+                                "size_bytes": c.remote_version().size_bytes(),
+                                "modified_at": c.remote_version().modified_at().to_rfc3339(),
+                            },
+                        })
+                    })
+                    .collect();
+                serde_json::to_string(&json).unwrap_or_else(|_| "[]".to_string())
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to query unresolved conflicts");
+                "[]".to_string()
+            }
+        }
+    }
+
+    /// Returns detailed JSON for a specific conflict
+    ///
+    /// # Arguments
+    /// * `id` - The conflict's unique identifier
+    ///
+    /// # Returns
+    /// JSON string with conflict details, or empty object if not found
+    async fn get_details(&self, id: String) -> String {
+        use lnxdrive_core::domain::newtypes::ConflictId;
+
+        let conflict_id = match id.parse::<ConflictId>() {
+            Ok(cid) => cid,
+            Err(_) => return "{}".to_string(),
+        };
+
+        match self.state_repository.get_conflict_by_id(&conflict_id).await {
+            Ok(Some(conflict)) => serde_json::json!({
+                "id": conflict.id().to_string(),
+                "item_id": conflict.item_id().to_string(),
+                "detected_at": conflict.detected_at().to_rfc3339(),
+                "is_resolved": conflict.is_resolved(),
+                "local_version": {
+                    "hash": conflict.local_version().hash().to_string(),
+                    "size_bytes": conflict.local_version().size_bytes(),
+                    "modified_at": conflict.local_version().modified_at().to_rfc3339(),
+                    "etag": conflict.local_version().etag(),
+                },
+                "remote_version": {
+                    "hash": conflict.remote_version().hash().to_string(),
+                    "size_bytes": conflict.remote_version().size_bytes(),
+                    "modified_at": conflict.remote_version().modified_at().to_rfc3339(),
+                    "etag": conflict.remote_version().etag(),
+                },
+            })
+            .to_string(),
+            Ok(None) => "{}".to_string(),
+            Err(e) => {
+                warn!(error = %e, conflict_id = %id, "Failed to get conflict details");
+                "{}".to_string()
+            }
+        }
     }
 
     /// Attempts to resolve a conflict with the given strategy
@@ -256,33 +334,125 @@ impl ConflictsInterface {
     /// * `strategy` - Resolution strategy: "keep_local", "keep_remote", or "keep_both"
     ///
     /// # Returns
-    /// `true` if the conflict was found and resolution was initiated,
-    /// `false` if the conflict was not found or the strategy is invalid
+    /// `true` if the conflict was resolved, `false` on error or invalid input
     async fn resolve(&self, id: String, strategy: String) -> bool {
-        let valid_strategies = ["keep_local", "keep_remote", "keep_both"];
-        if !valid_strategies.contains(&strategy.as_str()) {
-            warn!(
-                strategy = %strategy,
-                "Invalid conflict resolution strategy"
-            );
+        use lnxdrive_core::domain::{
+            conflict::{Resolution, ResolutionSource},
+            newtypes::ConflictId,
+        };
+
+        let resolution = match strategy.as_str() {
+            "keep_local" | "local" => Resolution::KeepLocal,
+            "keep_remote" | "remote" => Resolution::KeepRemote,
+            "keep_both" | "both" => Resolution::KeepBoth,
+            _ => {
+                warn!(strategy = %strategy, "Invalid conflict resolution strategy");
+                return false;
+            }
+        };
+
+        let conflict_id = match id.parse::<ConflictId>() {
+            Ok(cid) => cid,
+            Err(_) => {
+                warn!(id = %id, "Invalid conflict ID");
+                return false;
+            }
+        };
+
+        // Find the conflict
+        let conflict = match self.state_repository.get_conflict_by_id(&conflict_id).await {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                warn!(id = %id, "Conflict not found");
+                return false;
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to query conflict");
+                return false;
+            }
+        };
+
+        if conflict.is_resolved() {
+            warn!(id = %id, "Conflict already resolved");
             return false;
         }
 
         info!(
             conflict_id = %id,
             strategy = %strategy,
-            "Conflict resolution requested via D-Bus"
+            "Resolving conflict via D-Bus"
         );
 
-        // Conflict resolution is logged but actual resolution requires
-        // integration with the conflict engine (Phase 10+).
-        // For now, we acknowledge the request.
-        debug!(
-            "Conflict resolution for '{}' with strategy '{}' acknowledged",
-            id, strategy
-        );
-        true
+        // Mark as resolved in the database
+        let resolved = conflict.resolve(resolution, ResolutionSource::User);
+        match self.state_repository.save_conflict(&resolved).await {
+            Ok(()) => {
+                info!(conflict_id = %id, "Conflict resolved successfully");
+                true
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to save resolved conflict");
+                false
+            }
+        }
     }
+
+    /// Resolve all unresolved conflicts with the same strategy
+    ///
+    /// # Arguments
+    /// * `strategy` - Resolution strategy: "keep_local", "keep_remote", or "keep_both"
+    ///
+    /// # Returns
+    /// Number of conflicts resolved
+    async fn resolve_all(&self, strategy: String) -> u32 {
+        use lnxdrive_core::domain::conflict::{Resolution, ResolutionSource};
+
+        let resolution = match strategy.as_str() {
+            "keep_local" | "local" => Resolution::KeepLocal,
+            "keep_remote" | "remote" => Resolution::KeepRemote,
+            "keep_both" | "both" => Resolution::KeepBoth,
+            _ => {
+                warn!(strategy = %strategy, "Invalid strategy for resolve_all");
+                return 0;
+            }
+        };
+
+        let conflicts = match self.state_repository.get_unresolved_conflicts().await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "Failed to query conflicts for batch resolve");
+                return 0;
+            }
+        };
+
+        let mut resolved_count = 0u32;
+        for conflict in conflicts {
+            let resolved = conflict.resolve(resolution.clone(), ResolutionSource::User);
+            if self.state_repository.save_conflict(&resolved).await.is_ok() {
+                resolved_count += 1;
+            }
+        }
+
+        info!(count = resolved_count, strategy = %strategy, "Batch resolve completed");
+        resolved_count
+    }
+
+    // D-Bus Signals
+
+    /// Emitted when a new conflict is detected
+    #[zbus(signal)]
+    async fn conflict_detected(
+        signal_ctxt: &zbus::SignalContext<'_>,
+        conflict_json: &str,
+    ) -> zbus::Result<()>;
+
+    /// Emitted when a conflict is resolved
+    #[zbus(signal)]
+    async fn conflict_resolved(
+        signal_ctxt: &zbus::SignalContext<'_>,
+        conflict_id: &str,
+        strategy: &str,
+    ) -> zbus::Result<()>;
 }
 
 // ============================================================================
@@ -296,18 +466,26 @@ impl ConflictsInterface {
 /// well-known name `com.enigmora.LNXDrive`.
 pub struct DbusService {
     state: Arc<Mutex<DaemonState>>,
+    state_repository: Option<Arc<dyn IStateRepository>>,
 }
 
 impl DbusService {
-    /// Creates a new DbusService with the given shared state
-    pub fn new(state: Arc<Mutex<DaemonState>>) -> Self {
-        Self { state }
+    /// Creates a new DbusService with the given shared state and state repository
+    pub fn new(
+        state: Arc<Mutex<DaemonState>>,
+        state_repository: Arc<dyn IStateRepository>,
+    ) -> Self {
+        Self {
+            state,
+            state_repository: Some(state_repository),
+        }
     }
 
-    /// Creates a new DbusService with default state
+    /// Creates a new DbusService with default state (no repository — for testing)
     pub fn with_default_state() -> Self {
         Self {
             state: Arc::new(Mutex::new(DaemonState::default())),
+            state_repository: None,
         }
     }
 
@@ -327,12 +505,20 @@ impl DbusService {
     /// - The session bus is not available
     /// - The well-known name is already owned (another instance running)
     /// - Interface registration fails
+    /// - No state repository is configured
     pub async fn start(&self) -> anyhow::Result<zbus::Connection> {
         info!("Starting D-Bus service on session bus");
 
+        let state_repo = self
+            .state_repository
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("DbusService requires a state_repository to start"))?
+            .clone();
+
         let sync_controller = SyncControllerInterface::new(Arc::clone(&self.state));
         let account_iface = AccountInterface::new(Arc::clone(&self.state));
-        let conflicts_iface = ConflictsInterface::new(Arc::clone(&self.state));
+        let conflicts_iface =
+            ConflictsInterface::new(Arc::clone(&self.state), state_repo);
 
         let connection = zbus::connection::Builder::session()?
             .name(DBUS_NAME)?
@@ -404,7 +590,6 @@ mod tests {
         assert!(state.account_email.is_none());
         assert!(state.account_display_name.is_none());
         assert!(state.last_sync_result.is_none());
-        assert_eq!(state.conflicts_json, "[]");
     }
 
     #[test]
@@ -510,59 +695,30 @@ mod tests {
         assert!(account.check_auth().await);
     }
 
+    async fn make_test_repo() -> Arc<lnxdrive_cache::SqliteStateRepository> {
+        let pool = lnxdrive_cache::pool::DatabasePool::in_memory()
+            .await
+            .expect("Failed to create in-memory database");
+        Arc::new(lnxdrive_cache::SqliteStateRepository::new(
+            pool.pool().clone(),
+        ))
+    }
+
     #[tokio::test]
     async fn test_conflicts_list_empty() {
         let state = Arc::new(Mutex::new(DaemonState::default()));
-        let conflicts = ConflictsInterface::new(state);
+        let repo = make_test_repo().await;
+        let conflicts = ConflictsInterface::new(state, repo);
 
         let result = conflicts.list().await;
         assert_eq!(result, "[]");
     }
 
     #[tokio::test]
-    async fn test_conflicts_list_with_data() {
-        let conflicts_data = serde_json::json!([
-            {"id": "c1", "path": "/test/file.txt"},
-            {"id": "c2", "path": "/test/other.txt"},
-        ])
-        .to_string();
-
-        let state = Arc::new(Mutex::new(DaemonState {
-            conflicts_json: conflicts_data.clone(),
-            ..DaemonState::default()
-        }));
-        let conflicts = ConflictsInterface::new(state);
-
-        let result = conflicts.list().await;
-        assert_eq!(result, conflicts_data);
-    }
-
-    #[tokio::test]
-    async fn test_conflicts_resolve_valid_strategy() {
-        let state = Arc::new(Mutex::new(DaemonState::default()));
-        let conflicts = ConflictsInterface::new(state);
-
-        assert!(
-            conflicts
-                .resolve("c1".to_string(), "keep_local".to_string())
-                .await
-        );
-        assert!(
-            conflicts
-                .resolve("c2".to_string(), "keep_remote".to_string())
-                .await
-        );
-        assert!(
-            conflicts
-                .resolve("c3".to_string(), "keep_both".to_string())
-                .await
-        );
-    }
-
-    #[tokio::test]
     async fn test_conflicts_resolve_invalid_strategy() {
         let state = Arc::new(Mutex::new(DaemonState::default()));
-        let conflicts = ConflictsInterface::new(state);
+        let repo = make_test_repo().await;
+        let conflicts = ConflictsInterface::new(state, repo);
 
         assert!(
             !conflicts
@@ -576,6 +732,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_conflicts_resolve_not_found() {
+        let state = Arc::new(Mutex::new(DaemonState::default()));
+        let repo = make_test_repo().await;
+        let conflicts = ConflictsInterface::new(state, repo);
+
+        // Valid strategy but non-existent conflict
+        let fake_id = lnxdrive_core::domain::newtypes::ConflictId::new().to_string();
+        assert!(
+            !conflicts
+                .resolve(fake_id, "keep_local".to_string())
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn test_conflicts_resolve_all_empty() {
+        let state = Arc::new(Mutex::new(DaemonState::default()));
+        let repo = make_test_repo().await;
+        let conflicts = ConflictsInterface::new(state, repo);
+
+        let count = conflicts.resolve_all("keep_local".to_string()).await;
+        assert_eq!(count, 0);
+    }
+
     #[test]
     fn test_dbus_service_with_default_state() {
         let service = DbusService::with_default_state();
@@ -583,13 +764,14 @@ mod tests {
         let _state = service.state();
     }
 
-    #[test]
-    fn test_dbus_service_with_custom_state() {
+    #[tokio::test]
+    async fn test_dbus_service_with_custom_state() {
         let state = Arc::new(Mutex::new(DaemonState {
             account_email: Some("user@test.com".to_string()),
             ..DaemonState::default()
         }));
-        let service = DbusService::new(state);
+        let repo = make_test_repo().await;
+        let service = DbusService::new(state, repo);
         let _state = service.state();
     }
 

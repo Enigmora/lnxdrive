@@ -1012,6 +1012,22 @@ impl IStateRepository for SqliteStateRepository {
         Ok(conflicts)
     }
 
+    async fn get_conflict_by_id(
+        &self,
+        id: &lnxdrive_core::domain::newtypes::ConflictId,
+    ) -> anyhow::Result<Option<lnxdrive_core::domain::Conflict>> {
+        let id_str = id.to_string();
+        let row = sqlx::query("SELECT * FROM conflicts WHERE id = ?")
+            .bind(&id_str)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some(ref r) => Ok(Some(conflict_from_row(r)?)),
+            None => Ok(None),
+        }
+    }
+
     // --- FUSE inode operations ---
 
     /// Atomically get the next available inode number

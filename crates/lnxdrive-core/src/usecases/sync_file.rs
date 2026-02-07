@@ -144,7 +144,7 @@ impl SyncFileUseCase {
         let delta_item = if item.size_bytes() < SIMPLE_UPLOAD_THRESHOLD {
             // Simple PUT upload for small files
             self.cloud_provider
-                .upload_file(&parent_path, file_name, &content)
+                .upload_file(&parent_path, file_name, &content, None)
                 .await
                 .context("Failed to upload small file via PUT")?
         } else {

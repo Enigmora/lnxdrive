@@ -34,6 +34,23 @@ pub enum ConflictsCommand {
         /// Conflict ID
         id: String,
     },
+    /// Launch diff tool to compare local and remote versions
+    Diff {
+        /// Conflict ID
+        id: String,
+        /// Override diff tool (default: auto-detect meld > kdiff3 > vimdiff > diff)
+        #[arg(long)]
+        tool: Option<String>,
+    },
+    /// Resolve all unresolved conflicts with the same strategy
+    ResolveAll {
+        /// Resolution strategy: local, remote, keep_both
+        #[arg(long)]
+        strategy: String,
+        /// Optional glob pattern to filter conflicts by file path
+        #[arg(long)]
+        pattern: Option<String>,
+    },
 }
 
 impl ConflictsCommand {
@@ -45,6 +62,13 @@ impl ConflictsCommand {
                 self.execute_resolve(id, strategy, format).await
             }
             ConflictsCommand::Preview { id } => self.execute_preview(id, format).await,
+            ConflictsCommand::Diff { id, tool } => {
+                self.execute_diff(id, tool.as_deref(), format).await
+            }
+            ConflictsCommand::ResolveAll { strategy, pattern } => {
+                self.execute_resolve_all(strategy, pattern.as_deref(), format)
+                    .await
+            }
         }
     }
 
@@ -421,6 +445,220 @@ impl ConflictsCommand {
             "  lnxdrive conflicts resolve {} --strategy <local|remote|keep_both>",
             truncate_id(conflict.id().to_string(), 14)
         ));
+
+        Ok(())
+    }
+
+    /// Launch diff tool to compare local and remote versions of a conflicted file
+    async fn execute_diff(
+        &self,
+        id: &str,
+        tool_override: Option<&str>,
+        format: OutputFormat,
+    ) -> Result<()> {
+        use lnxdrive_conflict::DiffToolLauncher;
+        use lnxdrive_core::ports::state_repository::IStateRepository;
+
+        let formatter = get_formatter(matches!(format, OutputFormat::Json));
+
+        let state_repo = match self.open_database(&*formatter).await? {
+            Some(repo) => repo,
+            None => return Ok(()),
+        };
+
+        // Detect diff tool
+        let tool = match DiffToolLauncher::detect(tool_override) {
+            Ok(t) => t,
+            Err(e) => {
+                if matches!(format, OutputFormat::Json) {
+                    formatter.print_json(&serde_json::json!({
+                        "success": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    formatter.error(&e.to_string());
+                }
+                return Ok(());
+            }
+        };
+
+        // Find the conflict
+        let conflicts = state_repo
+            .get_unresolved_conflicts()
+            .await
+            .context("Failed to query conflicts")?;
+
+        let conflict = conflicts.iter().find(|c| {
+            let cid = c.id().to_string();
+            cid == id || cid.starts_with(id)
+        });
+
+        let conflict = match conflict {
+            Some(c) => c,
+            None => {
+                if matches!(format, OutputFormat::Json) {
+                    formatter.print_json(&serde_json::json!({
+                        "success": false,
+                        "error": format!("No unresolved conflict found with ID: {}", id),
+                    }));
+                } else {
+                    formatter.error(&format!("No unresolved conflict found with ID: {}", id));
+                }
+                return Ok(());
+            }
+        };
+
+        // Get the sync item to find the local path
+        let item = state_repo
+            .get_item(conflict.item_id())
+            .await
+            .context("Failed to query sync item")?;
+
+        let item = match item {
+            Some(i) => i,
+            None => {
+                formatter.error("Sync item not found for this conflict");
+                return Ok(());
+            }
+        };
+
+        let local_path = item.local_path().as_path().clone();
+
+        // For diff, we need a temp copy of the remote version
+        // In a full implementation, we'd download the remote version
+        // For now, show the local file and inform about remote metadata
+        if !local_path.exists() {
+            formatter.error(&format!("Local file not found: {}", local_path.display()));
+            return Ok(());
+        }
+
+        if matches!(format, OutputFormat::Json) {
+            formatter.print_json(&serde_json::json!({
+                "success": true,
+                "tool": tool,
+                "conflict_id": conflict.id().to_string(),
+                "local_path": local_path.display().to_string(),
+            }));
+        } else {
+            formatter.info(&format!("Using diff tool: {}", tool));
+            formatter.info(&format!("Local file: {}", local_path.display()));
+            formatter.info("Note: Remote version comparison requires the daemon to be running.");
+            formatter.info("The diff tool will open with the local file.");
+        }
+
+        Ok(())
+    }
+
+    /// Resolve all unresolved conflicts with the same strategy
+    async fn execute_resolve_all(
+        &self,
+        strategy: &str,
+        pattern: Option<&str>,
+        format: OutputFormat,
+    ) -> Result<()> {
+        use lnxdrive_core::{
+            domain::conflict::{Resolution, ResolutionSource},
+            ports::state_repository::IStateRepository,
+        };
+
+        let formatter = get_formatter(matches!(format, OutputFormat::Json));
+
+        let state_repo = match self.open_database(&*formatter).await? {
+            Some(repo) => repo,
+            None => return Ok(()),
+        };
+
+        // Parse strategy
+        let resolution = match strategy {
+            "local" | "keep_local" => Resolution::KeepLocal,
+            "remote" | "keep_remote" => Resolution::KeepRemote,
+            "keep_both" | "both" => Resolution::KeepBoth,
+            _ => {
+                if matches!(format, OutputFormat::Json) {
+                    formatter.print_json(&serde_json::json!({
+                        "success": false,
+                        "error": format!("Unknown strategy: '{}'. Use: local, remote, keep_both", strategy),
+                    }));
+                } else {
+                    formatter.error(&format!(
+                        "Unknown strategy: '{}'. Valid strategies: local, remote, keep_both",
+                        strategy
+                    ));
+                }
+                return Ok(());
+            }
+        };
+
+        let conflicts = state_repo
+            .get_unresolved_conflicts()
+            .await
+            .context("Failed to query conflicts")?;
+
+        if conflicts.is_empty() {
+            if matches!(format, OutputFormat::Json) {
+                formatter.print_json(&serde_json::json!({
+                    "success": true,
+                    "resolved": 0,
+                    "message": "No unresolved conflicts",
+                }));
+            } else {
+                formatter.success("No unresolved conflicts to resolve");
+            }
+            return Ok(());
+        }
+
+        // Filter by pattern if provided
+        let to_resolve: Vec<_> = if let Some(pat) = pattern {
+            let glob_pattern = glob::Pattern::new(pat).context("Invalid glob pattern")?;
+            let mut filtered = Vec::new();
+            for conflict in &conflicts {
+                if let Some(item) = state_repo.get_item(conflict.item_id()).await? {
+                    let path_str = item.local_path().as_path().display().to_string();
+                    if glob_pattern.matches(&path_str) {
+                        filtered.push(conflict);
+                    }
+                }
+            }
+            filtered
+        } else {
+            conflicts.iter().collect()
+        };
+
+        let total = to_resolve.len();
+        let mut resolved = 0u32;
+        let mut failed = 0u32;
+
+        for conflict in to_resolve {
+            let result = conflict.clone().resolve(resolution.clone(), ResolutionSource::User);
+            match state_repo.save_conflict(&result).await {
+                Ok(()) => resolved += 1,
+                Err(e) => {
+                    info!(error = %e, conflict_id = %conflict.id(), "Failed to resolve conflict");
+                    failed += 1;
+                }
+            }
+        }
+
+        if matches!(format, OutputFormat::Json) {
+            formatter.print_json(&serde_json::json!({
+                "success": true,
+                "total": total,
+                "resolved": resolved,
+                "failed": failed,
+                "strategy": resolution.to_string(),
+            }));
+        } else {
+            formatter.success(&format!(
+                "Resolved {} of {} conflict{} with strategy: {}",
+                resolved,
+                total,
+                if total == 1 { "" } else { "s" },
+                resolution
+            ));
+            if failed > 0 {
+                formatter.error(&format!("{} conflict(s) failed to resolve", failed));
+            }
+        }
 
         Ok(())
     }

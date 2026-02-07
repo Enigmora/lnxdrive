@@ -38,6 +38,16 @@ large_files:
 
 conflicts:
   default_strategy: manual  # manual | keep_local | keep_remote | keep_both
+  # diff_tool: meld  # Override auto-detected diff tool (meld, vimdiff, diff)
+  rules: []
+  # Pattern-based auto-resolution rules (first match wins):
+  # rules:
+  #   - pattern: "**/*.tmp"
+  #     strategy: keep_remote
+  #   - pattern: "**/*.docx"
+  #     strategy: keep_both
+  #   - pattern: "Documents/**"
+  #     strategy: keep_local
 
 logging:
   level: info  # trace | debug | info | warn | error

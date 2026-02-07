@@ -104,7 +104,10 @@ impl DaemonService {
         info!("Checking for existing daemon instance...");
 
         // T224: Start D-Bus service (this also acquires the well-known name)
-        let dbus_service = DbusService::new(Arc::clone(&self.daemon_state));
+        let dbus_service = DbusService::new(
+            Arc::clone(&self.daemon_state),
+            Arc::clone(&self.state_repo) as Arc<dyn IStateRepository>,
+        );
         let _dbus_connection = match dbus_service.start().await {
             Ok(conn) => {
                 info!("D-Bus service started, acquired name {}", DBUS_NAME);

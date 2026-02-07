@@ -9,5 +9,16 @@ description = "Conflict detection and resolution for LNXDrive"
 [dependencies]
 lnxdrive-core.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+glob = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
