@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 lnxdrive-core.workspace = true
 lnxdrive-conflict.workspace = true
+lnxdrive-telemetry.workspace = true
 lnxdrive-graph.workspace = true
 lnxdrive-sync.workspace = true
 lnxdrive-cache.workspace = true

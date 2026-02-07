@@ -21,6 +21,10 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub auth: AuthConfig,
     pub fuse: FuseConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 /// Synchronization settings.
@@ -88,6 +92,151 @@ pub struct LoggingConfig {
     pub max_size_mb: u64,
     /// Maximum number of rotated log files to keep.
     pub max_files: u32,
+}
+
+/// Observability settings (logging, audit, metrics).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservabilityConfig {
+    /// Log level override (trace, debug, info, warn, error).
+    /// When set, takes precedence over `logging.level`.
+    #[serde(default = "default_log_format")]
+    pub log_format: String,
+    /// Audit retention duration (e.g., "30d", "12h", "60m").
+    #[serde(default = "default_audit_retention")]
+    pub audit_retention: String,
+    /// Prometheus metrics configuration.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+}
+
+fn default_log_format() -> String {
+    "json".to_string()
+}
+
+fn default_audit_retention() -> String {
+    "30d".to_string()
+}
+
+impl Default for ObservabilityConfig {
+    fn default() -> Self {
+        Self {
+            log_format: default_log_format(),
+            audit_retention: default_audit_retention(),
+            metrics: MetricsConfig::default(),
+        }
+    }
+}
+
+/// Prometheus metrics endpoint configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetricsConfig {
+    /// Whether Prometheus metrics are enabled.
+    #[serde(default = "default_metrics_enabled")]
+    pub enabled: bool,
+    /// Address:port to bind the metrics HTTP server.
+    #[serde(default = "default_metrics_endpoint")]
+    pub endpoint: String,
+}
+
+fn default_metrics_enabled() -> bool {
+    true
+}
+
+fn default_metrics_endpoint() -> String {
+    "127.0.0.1:9100".to_string()
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_metrics_enabled(),
+            endpoint: default_metrics_endpoint(),
+        }
+    }
+}
+
+/// Telemetry (opt-in) configuration for crash/error reporting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryConfig {
+    /// Master switch for telemetry. Default: `false` (opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// What data to collect.
+    #[serde(default)]
+    pub data: TelemetryDataConfig,
+    /// Sending mode: "manual", "automatic", or "ask".
+    #[serde(default = "default_telemetry_mode")]
+    pub mode: String,
+    /// Anonymization settings.
+    #[serde(default)]
+    pub anonymize: AnonymizeConfig,
+}
+
+fn default_telemetry_mode() -> String {
+    "manual".to_string()
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            data: TelemetryDataConfig::default(),
+            mode: default_telemetry_mode(),
+            anonymize: AnonymizeConfig::default(),
+        }
+    }
+}
+
+/// Which telemetry data categories to collect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryDataConfig {
+    /// Collect crash reports (panics with backtraces).
+    #[serde(default = "default_true")]
+    pub crash_reports: bool,
+    /// Collect non-fatal error reports.
+    #[serde(default)]
+    pub error_reports: bool,
+    /// Collect anonymized usage statistics.
+    #[serde(default)]
+    pub usage_stats: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for TelemetryDataConfig {
+    fn default() -> Self {
+        Self {
+            crash_reports: true,
+            error_reports: false,
+            usage_stats: false,
+        }
+    }
+}
+
+/// Anonymization rules applied before storing/sending reports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnonymizeConfig {
+    /// Replace file paths with placeholders.
+    #[serde(default = "default_true")]
+    pub strip_paths: bool,
+    /// Replace usernames with placeholders.
+    #[serde(default = "default_true")]
+    pub strip_usernames: bool,
+    /// Replace file names with placeholders.
+    #[serde(default = "default_true")]
+    pub strip_filenames: bool,
+}
+
+impl Default for AnonymizeConfig {
+    fn default() -> Self {
+        Self {
+            strip_paths: true,
+            strip_usernames: true,
+            strip_filenames: true,
+        }
+    }
 }
 
 /// Authentication / OAuth settings.
@@ -254,6 +403,12 @@ const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 /// Valid values for `conflicts.default_strategy`.
 const VALID_CONFLICT_STRATEGIES: &[&str] = &["manual", "keep_local", "keep_remote", "keep_both"];
 
+/// Valid values for `observability.log_format`.
+const VALID_LOG_FORMATS: &[&str] = &["json", "text"];
+
+/// Valid values for `telemetry.mode`.
+const VALID_TELEMETRY_MODES: &[&str] = &["manual", "automatic", "ask"];
+
 impl Config {
     /// Validate the configuration and return all errors found.
     ///
@@ -406,6 +561,64 @@ impl Config {
             errors.push(ValidationError {
                 field: "fuse.dehydration_interval_minutes".into(),
                 message: "must be greater than 0".into(),
+            });
+        }
+
+        // --- observability ---
+        if !VALID_LOG_FORMATS.contains(&self.observability.log_format.as_str()) {
+            errors.push(ValidationError {
+                field: "observability.log_format".into(),
+                message: format!(
+                    "invalid format '{}'; valid options: {}",
+                    self.observability.log_format,
+                    VALID_LOG_FORMATS.join(", ")
+                ),
+            });
+        }
+
+        // audit_retention must match \d+[dhm]
+        {
+            let r = &self.observability.audit_retention;
+            let valid = r.len() >= 2
+                && r[..r.len() - 1].chars().all(|c| c.is_ascii_digit())
+                && matches!(r.as_bytes().last(), Some(b'd' | b'h' | b'm'));
+            if !valid {
+                errors.push(ValidationError {
+                    field: "observability.audit_retention".into(),
+                    message: format!(
+                        "invalid retention '{}'; must match pattern <number><d|h|m> (e.g., 30d, 12h, 60m)",
+                        r
+                    ),
+                });
+            }
+        }
+
+        // metrics.endpoint must be addr:port
+        if self.observability.metrics.enabled {
+            let parts: Vec<&str> = self.observability.metrics.endpoint.rsplitn(2, ':').collect();
+            let valid = parts.len() == 2
+                && parts[0].parse::<u16>().is_ok()
+                && !parts[1].is_empty();
+            if !valid {
+                errors.push(ValidationError {
+                    field: "observability.metrics.endpoint".into(),
+                    message: format!(
+                        "invalid endpoint '{}'; must be addr:port (e.g., 127.0.0.1:9100)",
+                        self.observability.metrics.endpoint
+                    ),
+                });
+            }
+        }
+
+        // --- telemetry ---
+        if !VALID_TELEMETRY_MODES.contains(&self.telemetry.mode.as_str()) {
+            errors.push(ValidationError {
+                field: "telemetry.mode".into(),
+                message: format!(
+                    "invalid mode '{}'; valid options: {}",
+                    self.telemetry.mode,
+                    VALID_TELEMETRY_MODES.join(", ")
+                ),
             });
         }
 
@@ -582,6 +795,50 @@ impl ConfigBuilder {
 
     pub fn fuse_hydration_concurrency(mut self, concurrency: u8) -> Self {
         self.config.fuse.hydration_concurrency = concurrency;
+        self
+    }
+
+    // --- observability ---
+
+    pub fn observability_log_format(mut self, format: impl Into<String>) -> Self {
+        self.config.observability.log_format = format.into();
+        self
+    }
+
+    pub fn observability_audit_retention(mut self, retention: impl Into<String>) -> Self {
+        self.config.observability.audit_retention = retention.into();
+        self
+    }
+
+    pub fn observability_metrics_enabled(mut self, enabled: bool) -> Self {
+        self.config.observability.metrics.enabled = enabled;
+        self
+    }
+
+    pub fn observability_metrics_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.config.observability.metrics.endpoint = endpoint.into();
+        self
+    }
+
+    // --- telemetry ---
+
+    pub fn telemetry_enabled(mut self, enabled: bool) -> Self {
+        self.config.telemetry.enabled = enabled;
+        self
+    }
+
+    pub fn telemetry_mode(mut self, mode: impl Into<String>) -> Self {
+        self.config.telemetry.mode = mode.into();
+        self
+    }
+
+    pub fn telemetry_crash_reports(mut self, enabled: bool) -> Self {
+        self.config.telemetry.data.crash_reports = enabled;
+        self
+    }
+
+    pub fn telemetry_error_reports(mut self, enabled: bool) -> Self {
+        self.config.telemetry.data.error_reports = enabled;
         self
     }
 
@@ -1113,5 +1370,291 @@ fuse:
         assert_eq!(cfg.fuse.dehydration_max_age_days, 60);
         assert_eq!(cfg.fuse.dehydration_interval_minutes, 120);
         assert_eq!(cfg.fuse.hydration_concurrency, 10);
+    }
+
+    // -- ObservabilityConfig defaults --
+
+    #[test]
+    fn observability_config_default_values() {
+        let obs = ObservabilityConfig::default();
+        assert_eq!(obs.log_format, "json");
+        assert_eq!(obs.audit_retention, "30d");
+        assert!(obs.metrics.enabled);
+        assert_eq!(obs.metrics.endpoint, "127.0.0.1:9100");
+    }
+
+    // -- TelemetryConfig defaults --
+
+    #[test]
+    fn telemetry_config_default_values() {
+        let tel = TelemetryConfig::default();
+        assert!(!tel.enabled);
+        assert_eq!(tel.mode, "manual");
+        assert!(tel.data.crash_reports);
+        assert!(!tel.data.error_reports);
+        assert!(!tel.data.usage_stats);
+        assert!(tel.anonymize.strip_paths);
+        assert!(tel.anonymize.strip_usernames);
+        assert!(tel.anonymize.strip_filenames);
+    }
+
+    // -- Backward compatibility (YAML without new sections) --
+
+    #[test]
+    fn config_loads_without_observability_section() {
+        // Existing YAML without observability/telemetry should load fine via #[serde(default)]
+        let yaml = r#"
+sync:
+  root: ~/OneDrive
+  poll_interval: 30
+  debounce_delay: 2
+rate_limiting:
+  delta_requests_per_minute: 10
+  upload_concurrent: 4
+  upload_requests_per_minute: 60
+  download_concurrent: 8
+  metadata_requests_per_minute: 100
+large_files:
+  threshold_mb: 100
+  chunk_size_mb: 10
+  max_concurrent_large: 1
+conflicts:
+  default_strategy: manual
+logging:
+  level: info
+  file: /tmp/test.log
+  max_size_mb: 50
+  max_files: 5
+auth:
+  app_id: null
+fuse:
+  mount_point: ~/OneDrive
+  auto_mount: true
+  cache_dir: ~/.local/share/lnxdrive/cache
+  cache_max_size_gb: 10
+  dehydration_threshold_percent: 80
+  dehydration_max_age_days: 30
+  dehydration_interval_minutes: 60
+  hydration_concurrency: 8
+"#;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        tmp.write_all(yaml.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let cfg = Config::load(tmp.path()).expect("load config without observability");
+        // Should use defaults
+        assert_eq!(cfg.observability.log_format, "json");
+        assert_eq!(cfg.observability.audit_retention, "30d");
+        assert!(cfg.observability.metrics.enabled);
+        assert!(!cfg.telemetry.enabled);
+        assert_eq!(cfg.telemetry.mode, "manual");
+    }
+
+    // -- Observability validation --
+
+    #[test]
+    fn validate_catches_invalid_log_format() {
+        let mut cfg = Config::default();
+        cfg.observability.log_format = "xml".to_string();
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "observability.log_format"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_log_formats() {
+        for fmt in VALID_LOG_FORMATS {
+            let mut cfg = Config::default();
+            cfg.observability.log_format = fmt.to_string();
+            let errors = cfg.validate();
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| e.field == "observability.log_format"),
+                "format '{fmt}' should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_catches_invalid_audit_retention() {
+        let mut cfg = Config::default();
+        cfg.observability.audit_retention = "forever".to_string();
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "observability.audit_retention"));
+
+        cfg.observability.audit_retention = "".to_string();
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "observability.audit_retention"));
+
+        cfg.observability.audit_retention = "d".to_string();
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "observability.audit_retention"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_audit_retention() {
+        for r in &["30d", "12h", "60m", "1d", "999h"] {
+            let mut cfg = Config::default();
+            cfg.observability.audit_retention = r.to_string();
+            let errors = cfg.validate();
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| e.field == "observability.audit_retention"),
+                "retention '{r}' should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_catches_invalid_metrics_endpoint() {
+        let mut cfg = Config::default();
+        cfg.observability.metrics.enabled = true;
+        cfg.observability.metrics.endpoint = "not-valid".to_string();
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "observability.metrics.endpoint"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_metrics_endpoint() {
+        let mut cfg = Config::default();
+        cfg.observability.metrics.enabled = true;
+        cfg.observability.metrics.endpoint = "127.0.0.1:9100".to_string();
+        let errors = cfg.validate();
+        assert!(!errors
+            .iter()
+            .any(|e| e.field == "observability.metrics.endpoint"));
+    }
+
+    // -- Telemetry validation --
+
+    #[test]
+    fn validate_catches_invalid_telemetry_mode() {
+        let mut cfg = Config::default();
+        cfg.telemetry.mode = "always".to_string();
+        let errors = cfg.validate();
+        assert!(errors.iter().any(|e| e.field == "telemetry.mode"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_telemetry_modes() {
+        for mode in VALID_TELEMETRY_MODES {
+            let mut cfg = Config::default();
+            cfg.telemetry.mode = mode.to_string();
+            let errors = cfg.validate();
+            assert!(
+                !errors.iter().any(|e| e.field == "telemetry.mode"),
+                "mode '{mode}' should be valid"
+            );
+        }
+    }
+
+    // -- Builder for new fields --
+
+    #[test]
+    fn builder_observability_and_telemetry() {
+        let cfg = ConfigBuilder::new()
+            .observability_log_format("text")
+            .observability_audit_retention("7d")
+            .observability_metrics_enabled(false)
+            .observability_metrics_endpoint("0.0.0.0:9200")
+            .telemetry_enabled(true)
+            .telemetry_mode("automatic")
+            .telemetry_crash_reports(false)
+            .telemetry_error_reports(true)
+            .build();
+
+        assert_eq!(cfg.observability.log_format, "text");
+        assert_eq!(cfg.observability.audit_retention, "7d");
+        assert!(!cfg.observability.metrics.enabled);
+        assert_eq!(cfg.observability.metrics.endpoint, "0.0.0.0:9200");
+        assert!(cfg.telemetry.enabled);
+        assert_eq!(cfg.telemetry.mode, "automatic");
+        assert!(!cfg.telemetry.data.crash_reports);
+        assert!(cfg.telemetry.data.error_reports);
+    }
+
+    // -- Full config with observability/telemetry sections --
+
+    #[test]
+    fn full_config_with_observability_telemetry() {
+        let yaml = r#"
+sync:
+  root: ~/OneDrive
+  poll_interval: 30
+  debounce_delay: 2
+rate_limiting:
+  delta_requests_per_minute: 10
+  upload_concurrent: 4
+  upload_requests_per_minute: 60
+  download_concurrent: 8
+  metadata_requests_per_minute: 100
+large_files:
+  threshold_mb: 100
+  chunk_size_mb: 10
+  max_concurrent_large: 1
+conflicts:
+  default_strategy: manual
+logging:
+  level: info
+  file: /tmp/test.log
+  max_size_mb: 50
+  max_files: 5
+auth:
+  app_id: null
+fuse:
+  mount_point: ~/OneDrive
+  auto_mount: true
+  cache_dir: ~/.local/share/lnxdrive/cache
+  cache_max_size_gb: 10
+  dehydration_threshold_percent: 80
+  dehydration_max_age_days: 30
+  dehydration_interval_minutes: 60
+  hydration_concurrency: 8
+observability:
+  log_format: text
+  audit_retention: 7d
+  metrics:
+    enabled: false
+    endpoint: "127.0.0.1:9200"
+telemetry:
+  enabled: true
+  mode: ask
+  data:
+    crash_reports: true
+    error_reports: true
+    usage_stats: false
+  anonymize:
+    strip_paths: false
+    strip_usernames: true
+    strip_filenames: false
+"#;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        tmp.write_all(yaml.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let cfg = Config::load(tmp.path()).expect("load config with observability");
+        assert_eq!(cfg.observability.log_format, "text");
+        assert_eq!(cfg.observability.audit_retention, "7d");
+        assert!(!cfg.observability.metrics.enabled);
+        assert_eq!(cfg.observability.metrics.endpoint, "127.0.0.1:9200");
+        assert!(cfg.telemetry.enabled);
+        assert_eq!(cfg.telemetry.mode, "ask");
+        assert!(cfg.telemetry.data.crash_reports);
+        assert!(cfg.telemetry.data.error_reports);
+        assert!(!cfg.telemetry.data.usage_stats);
+        assert!(!cfg.telemetry.anonymize.strip_paths);
+        assert!(cfg.telemetry.anonymize.strip_usernames);
+        assert!(!cfg.telemetry.anonymize.strip_filenames);
     }
 }

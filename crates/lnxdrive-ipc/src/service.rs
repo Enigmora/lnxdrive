@@ -456,6 +456,84 @@ impl ConflictsInterface {
 }
 
 // ============================================================================
+// T4-049: ObservabilityInterface
+// ============================================================================
+
+/// D-Bus interface for observability data
+///
+/// Provides methods to query audit trail entries and Prometheus metrics
+/// from D-Bus clients (CLI, GNOME extension, etc.).
+pub struct ObservabilityInterface {
+    state_repository: Arc<dyn IStateRepository>,
+    metrics: Option<Arc<lnxdrive_telemetry::MetricsRegistry>>,
+}
+
+impl ObservabilityInterface {
+    /// Creates a new ObservabilityInterface
+    pub fn new(
+        state_repository: Arc<dyn IStateRepository>,
+        metrics: Option<Arc<lnxdrive_telemetry::MetricsRegistry>>,
+    ) -> Self {
+        Self {
+            state_repository,
+            metrics,
+        }
+    }
+}
+
+#[zbus::interface(name = "com.enigmora.LNXDrive.Observability")]
+impl ObservabilityInterface {
+    /// Returns recent audit trail entries as a JSON array
+    ///
+    /// # Arguments
+    /// * `since_hours` - How many hours back to query (0 = last 24h)
+    /// * `limit` - Maximum number of entries to return
+    async fn get_audit_trail(&self, since_hours: u32, limit: u32) -> String {
+        let hours = if since_hours == 0 { 24 } else { since_hours };
+        let since = chrono::Utc::now()
+            - chrono::Duration::hours(hours as i64);
+        let limit = if limit == 0 { 50 } else { limit };
+
+        match self
+            .state_repository
+            .get_audit_since(since, limit)
+            .await
+        {
+            Ok(entries) => {
+                let json: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "timestamp": e.timestamp().to_rfc3339(),
+                            "action": e.action().to_string(),
+                            "result": serde_json::to_value(e.result()).unwrap_or_default(),
+                            "details": e.details(),
+                            "duration_ms": e.duration_ms(),
+                        })
+                    })
+                    .collect();
+                serde_json::to_string(&json).unwrap_or_else(|_| "[]".to_string())
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to query audit trail via D-Bus");
+                "[]".to_string()
+            }
+        }
+    }
+
+    /// Returns current Prometheus metrics in text exposition format
+    async fn get_metrics(&self) -> String {
+        match &self.metrics {
+            Some(metrics) => metrics.encode().unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to encode metrics");
+                String::new()
+            }),
+            None => "# Metrics not enabled\n".to_string(),
+        }
+    }
+}
+
+// ============================================================================
 // DbusService - high-level service orchestrator
 // ============================================================================
 
@@ -467,6 +545,7 @@ impl ConflictsInterface {
 pub struct DbusService {
     state: Arc<Mutex<DaemonState>>,
     state_repository: Option<Arc<dyn IStateRepository>>,
+    metrics: Option<Arc<lnxdrive_telemetry::MetricsRegistry>>,
 }
 
 impl DbusService {
@@ -478,7 +557,14 @@ impl DbusService {
         Self {
             state,
             state_repository: Some(state_repository),
+            metrics: None,
         }
+    }
+
+    /// Sets the Prometheus metrics registry for the Observability D-Bus interface
+    pub fn with_metrics(mut self, metrics: Arc<lnxdrive_telemetry::MetricsRegistry>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Creates a new DbusService with default state (no repository — for testing)
@@ -486,6 +572,7 @@ impl DbusService {
         Self {
             state: Arc::new(Mutex::new(DaemonState::default())),
             state_repository: None,
+            metrics: None,
         }
     }
 
@@ -518,13 +605,16 @@ impl DbusService {
         let sync_controller = SyncControllerInterface::new(Arc::clone(&self.state));
         let account_iface = AccountInterface::new(Arc::clone(&self.state));
         let conflicts_iface =
-            ConflictsInterface::new(Arc::clone(&self.state), state_repo);
+            ConflictsInterface::new(Arc::clone(&self.state), Arc::clone(&state_repo));
+        let observability_iface =
+            ObservabilityInterface::new(state_repo, self.metrics.clone());
 
         let connection = zbus::connection::Builder::session()?
             .name(DBUS_NAME)?
             .serve_at(DBUS_PATH, sync_controller)?
             .serve_at(DBUS_PATH, account_iface)?
             .serve_at(DBUS_PATH, conflicts_iface)?
+            .serve_at(DBUS_PATH, observability_iface)?
             .build()
             .await?;
 
@@ -798,5 +888,37 @@ mod tests {
         assert_eq!(status["state"], "idle");
         assert_eq!(status["account_email"], "user@test.com");
         assert!(status["last_sync_result"].is_string());
+    }
+
+    // -- ObservabilityInterface tests --
+
+    #[tokio::test]
+    async fn test_observability_get_audit_trail_empty() {
+        let repo = make_test_repo().await;
+        let obs = ObservabilityInterface::new(repo, None);
+
+        let result = obs.get_audit_trail(24, 50).await;
+        assert_eq!(result, "[]");
+    }
+
+    #[tokio::test]
+    async fn test_observability_get_metrics_disabled() {
+        let repo = make_test_repo().await;
+        let obs = ObservabilityInterface::new(repo, None);
+
+        let result = obs.get_metrics().await;
+        assert!(result.contains("not enabled"));
+    }
+
+    #[tokio::test]
+    async fn test_observability_get_metrics_enabled() {
+        let repo = make_test_repo().await;
+        let metrics = Arc::new(lnxdrive_telemetry::MetricsRegistry::new().unwrap());
+        metrics.record_sync_operation("download", "success");
+
+        let obs = ObservabilityInterface::new(repo, Some(metrics));
+
+        let result = obs.get_metrics().await;
+        assert!(result.contains("lnxdrive_sync_operations_total"));
     }
 }

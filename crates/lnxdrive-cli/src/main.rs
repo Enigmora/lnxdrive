@@ -25,6 +25,7 @@ use commands::{
     hydrate::{DehydrateCommand, HydrateCommand},
     mount::{MountCommand, UnmountCommand},
     pin::{PinCommand, UnpinCommand},
+    report::ReportCommand,
     status::StatusCommand,
     sync::SyncCommand,
 };
@@ -89,10 +90,20 @@ pub enum Commands {
     Hydrate(HydrateCommand),
     /// Dehydrate files to free local disk space
     Dehydrate(DehydrateCommand),
+    /// Manage crash and error reports
+    #[command(subcommand)]
+    Report(ReportCommand),
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install crash reporter
+    let reports_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
+        .join("lnxdrive")
+        .join("reports");
+    lnxdrive_telemetry::install_crash_reporter(reports_dir);
+
     let cli = Cli::parse();
 
     // Setup tracing
@@ -130,5 +141,6 @@ async fn main() -> Result<()> {
         Commands::Unpin(cmd) => cmd.execute(format).await,
         Commands::Hydrate(cmd) => cmd.execute(format).await,
         Commands::Dehydrate(cmd) => cmd.execute(format).await,
+        Commands::Report(cmd) => cmd.execute(format).await,
     }
 }
