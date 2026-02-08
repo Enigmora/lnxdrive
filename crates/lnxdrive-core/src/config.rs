@@ -55,11 +55,26 @@ pub struct LargeFilesConfig {
     pub max_concurrent_large: u32,
 }
 
+/// A single conflict resolution rule
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConflictRuleConfig {
+    /// Glob pattern to match file paths (e.g., "**/*.docx")
+    pub pattern: String,
+    /// Resolution strategy: `keep_local`, `keep_remote`, or `keep_both`
+    pub strategy: String,
+}
+
 /// Conflict resolution settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConflictsConfig {
     /// Default conflict strategy: `manual`, `keep_local`, `keep_remote`, or `keep_both`.
     pub default_strategy: String,
+    /// Ordered list of pattern-based resolution rules (first match wins)
+    #[serde(default)]
+    pub rules: Vec<ConflictRuleConfig>,
+    /// Optional diff tool override (e.g., "meld", "vimdiff")
+    #[serde(default)]
+    pub diff_tool: Option<String>,
 }
 
 /// Logging / tracing settings.
@@ -176,6 +191,8 @@ impl Default for ConflictsConfig {
     fn default() -> Self {
         Self {
             default_strategy: "manual".to_string(),
+            rules: Vec::new(),
+            diff_tool: None,
         }
     }
 }

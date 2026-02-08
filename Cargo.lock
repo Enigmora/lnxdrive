@@ -971,6 +971,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1542,7 +1548,9 @@ dependencies = [
  "clap_complete",
  "dirs",
  "fuser",
+ "glob",
  "lnxdrive-cache",
+ "lnxdrive-conflict",
  "lnxdrive-core",
  "lnxdrive-fuse",
  "lnxdrive-graph",
@@ -1559,10 +1567,18 @@ dependencies = [
 name = "lnxdrive-conflict"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "glob",
  "lnxdrive-core",
  "serde",
+ "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1657,6 +1673,8 @@ name = "lnxdrive-ipc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "lnxdrive-cache",
+ "lnxdrive-conflict",
  "lnxdrive-core",
  "serde",
  "serde_json",
@@ -1674,6 +1692,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "lnxdrive-conflict",
  "lnxdrive-core",
  "notify",
  "tempfile",

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 lnxdrive-core.workspace = true
+lnxdrive-conflict.workspace = true
 lnxdrive-graph.workspace = true
 lnxdrive-sync.workspace = true
 lnxdrive-cache.workspace = true
@@ -27,6 +28,7 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 clap_complete = "4.4"
 dirs = "5.0"
+glob = "0.3"
 
 [dev-dependencies]
 tempfile.workspace = true

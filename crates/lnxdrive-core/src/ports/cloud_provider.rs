@@ -207,6 +207,10 @@ pub trait ICloudProvider: Send + Sync {
     /// * `parent_path` - The remote path of the parent folder
     /// * `name` - The file name
     /// * `data` - The file contents
+    /// * `if_match_etag` - Optional ETag for conditional upload (If-Match header).
+    ///   When provided, the upload will only succeed if the remote file's current
+    ///   ETag matches. This prevents overwriting concurrent changes (race condition
+    ///   protection). Pass `None` for unconditional upload.
     ///
     /// # Returns
     /// Metadata of the uploaded file
@@ -215,6 +219,7 @@ pub trait ICloudProvider: Send + Sync {
         parent_path: &RemotePath,
         name: &str,
         data: &[u8],
+        if_match_etag: Option<&str>,
     ) -> anyhow::Result<DeltaItem>;
 
     /// Uploads a large file using a resumable upload session

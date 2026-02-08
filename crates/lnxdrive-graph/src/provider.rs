@@ -199,6 +199,7 @@ impl ICloudProvider for GraphCloudProvider {
         parent_path: &RemotePath,
         name: &str,
         data: &[u8],
+        _if_match_etag: Option<&str>,
     ) -> Result<DeltaItem> {
         let client = self.client.lock().await;
         debug!(
@@ -207,6 +208,7 @@ impl ICloudProvider for GraphCloudProvider {
             size = data.len(),
             "GraphCloudProvider::upload_file"
         );
+        // TODO: Pass if_match_etag as If-Match header to Graph API
         upload::upload_small(&client, parent_path, name, data).await
     }
 
