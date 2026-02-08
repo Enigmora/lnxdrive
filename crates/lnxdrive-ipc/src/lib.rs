@@ -4,9 +4,15 @@
 //! with the LNXDrive daemon via D-Bus session bus.
 //!
 //! # Interfaces
-//! - `com.enigmora.LNXDrive.SyncController` - Sync control
-//! - `com.enigmora.LNXDrive.Account` - Account management
+//! - `com.enigmora.LNXDrive.SyncController` - Sync control (legacy)
+//! - `com.enigmora.LNXDrive.Account` - Account management (legacy)
 //! - `com.enigmora.LNXDrive.Conflicts` - Conflict resolution
+//! - `com.enigmora.LNXDrive.Files` - File status queries, pin/unpin, sync-by-path
+//! - `com.enigmora.LNXDrive.Sync` - Global sync control with properties
+//! - `com.enigmora.LNXDrive.Status` - Account and quota information
+//! - `com.enigmora.LNXDrive.Auth` - OAuth2 authentication
+//! - `com.enigmora.LNXDrive.Settings` - Configuration management
+//! - `com.enigmora.LNXDrive.Manager` - Daemon lifecycle
 //!
 //! # Usage
 //!
@@ -27,6 +33,7 @@
 pub mod service;
 
 pub use service::{
-    AccountInterface, ConflictsInterface, DaemonState, DaemonSyncState, DbusService,
-    SyncControllerInterface, DBUS_NAME, DBUS_PATH,
+    AccountInterface, AuthInterface, ConflictsInterface, DaemonState, DaemonSyncState,
+    DbusService, FilesInterface, ManagerInterface, SettingsInterface, StatusInterface,
+    SyncControllerInterface, SyncInterface, DBUS_NAME, DBUS_PATH,
 };
