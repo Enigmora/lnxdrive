@@ -7,9 +7,8 @@
         container-build-systemd container-test-daemon \
         container-shell container-stop container-clean
 
-# Stub crates excluded from compilation (not yet implemented)
-EXCLUDE_STUBS = --exclude lnxdrive-fuse \
-                --exclude lnxdrive-conflict \
+# Crates excluded from default build (phase 4+)
+EXCLUDE_STUBS = --exclude lnxdrive-conflict \
                 --exclude lnxdrive-audit \
                 --exclude lnxdrive-telemetry
 
