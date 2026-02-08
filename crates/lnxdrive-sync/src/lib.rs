@@ -17,6 +17,7 @@ pub mod scheduler;
 pub mod watcher;
 
 use std::path::PathBuf;
+
 use thiserror::Error;
 
 /// Errors that can occur during synchronization operations

@@ -198,4 +198,55 @@ pub trait IStateRepository: Send + Sync {
     ///
     /// Returns conflicts ordered by detection time (newest first).
     async fn get_unresolved_conflicts(&self) -> anyhow::Result<Vec<Conflict>>;
+
+    // --- FUSE inode operations ---
+
+    /// Atomically get and increment the next available inode number
+    ///
+    /// Returns a unique inode value that can be assigned to a sync item.
+    /// This operation is atomic to ensure no two items receive the same inode.
+    async fn get_next_inode(&self) -> anyhow::Result<u64>;
+
+    /// Set the inode on a sync item
+    ///
+    /// Associates a FUSE inode number with a sync item for filesystem operations.
+    async fn update_inode(&self, item_id: &UniqueId, inode: u64) -> anyhow::Result<()>;
+
+    /// Look up a sync item by its inode number
+    ///
+    /// Used by FUSE to resolve inode references back to domain items.
+    async fn get_item_by_inode(&self, inode: u64) -> anyhow::Result<Option<SyncItem>>;
+
+    /// Update the last accessed timestamp for a sync item
+    ///
+    /// Used to track file access patterns for dehydration decisions.
+    async fn update_last_accessed(
+        &self,
+        item_id: &UniqueId,
+        accessed: DateTime<Utc>,
+    ) -> anyhow::Result<()>;
+
+    /// Update the hydration progress percentage for a sync item
+    ///
+    /// Tracks download progress for files being hydrated from the cloud.
+    /// Progress is stored as 0-100, or None if not currently hydrating.
+    async fn update_hydration_progress(
+        &self,
+        item_id: &UniqueId,
+        progress: Option<u8>,
+    ) -> anyhow::Result<()>;
+
+    /// Get sync items that are candidates for dehydration
+    ///
+    /// Returns items that:
+    /// - Are currently hydrated (state = 'hydrated')
+    /// - Have not been accessed recently (last_accessed older than max_age_days)
+    /// - Are sorted by least recently accessed first
+    ///
+    /// This allows implementing an LRU-based dehydration policy to reclaim disk space.
+    async fn get_items_for_dehydration(
+        &self,
+        max_age_days: u32,
+        limit: u32,
+    ) -> anyhow::Result<Vec<SyncItem>>;
 }

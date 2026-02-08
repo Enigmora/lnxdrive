@@ -6,8 +6,10 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::errors::DomainError;
-use super::newtypes::{AccountId, DeltaToken, Email, SyncPath};
+use super::{
+    errors::DomainError,
+    newtypes::{AccountId, DeltaToken, Email, SyncPath},
+};
 
 /// T031: Represents the current state of an account
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

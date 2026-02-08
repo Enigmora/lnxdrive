@@ -4,10 +4,11 @@
 //! against a wiremock-based Graph API mock server.
 
 use lnxdrive_core::domain::newtypes::RemoteId;
-use lnxdrive_graph::client::GraphClient;
-use lnxdrive_graph::upload;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use lnxdrive_graph::{client::GraphClient, upload};
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
 
 use crate::common;
 

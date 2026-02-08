@@ -9,9 +9,10 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-use crate::domain::newtypes::FileHash;
-use crate::domain::{AuditAction, AuditEntry, AuditResult, SyncItem};
-use crate::ports::{ICloudProvider, ILocalFileSystem, IStateRepository};
+use crate::{
+    domain::{newtypes::FileHash, AuditAction, AuditEntry, AuditResult, SyncItem},
+    ports::{ICloudProvider, ILocalFileSystem, IStateRepository},
+};
 
 /// Threshold in bytes for choosing simple PUT upload vs. resumable session upload.
 /// Files smaller than 4 MB use a simple PUT request.

@@ -6,6 +6,6 @@
 
 mod common;
 
-mod test_user_info;
 mod test_delta;
 mod test_sync_operations;
+mod test_user_info;

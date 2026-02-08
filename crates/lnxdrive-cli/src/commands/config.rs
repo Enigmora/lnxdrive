@@ -381,8 +381,9 @@ fn apply_config_value(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use lnxdrive_core::config::Config;
+
+    use super::*;
 
     #[test]
     fn test_apply_sync_root() {

@@ -7,7 +7,52 @@ license.workspace = true
 description = "FUSE filesystem for LNXDrive Files-on-Demand"
 
 [dependencies]
+# Workspace crates
+lnxdrive-core.workspace = true
+lnxdrive-cache.workspace = true
+lnxdrive-graph.workspace = true
+
+# FUSE filesystem
 fuser.workspace = true
+
+# Async runtime
 tokio.workspace = true
+
+# Logging and error handling
 tracing.workspace = true
 thiserror.workspace = true
+anyhow.workspace = true
+
+# Concurrency and data structures
+dashmap.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Cryptography
+sha2.workspace = true
+
+# Date and time
+chrono.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+# UUID generation
+uuid.workspace = true
+
+# Database
+sqlx.workspace = true
+
+# Signal handling and cancellation
+tokio-util.workspace = true
+
+# System calls
+libc.workspace = true
+
+# Path utilities
+dirs = "5.0"
+
+[dev-dependencies]
+tempfile.workspace = true

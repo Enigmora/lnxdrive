@@ -5,8 +5,10 @@
 //! 2. Formats entries in a table with timestamp, action, path, and details
 //! 3. Supports relative and absolute time parsing for the --since flag
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
@@ -38,8 +40,7 @@ pub struct AuditCommand {
 impl AuditCommand {
     /// T200: Execute the audit command
     pub async fn execute(&self, format: OutputFormat) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
         use lnxdrive_core::ports::state_repository::IStateRepository;
 
         let formatter = get_formatter(matches!(format, OutputFormat::Json));

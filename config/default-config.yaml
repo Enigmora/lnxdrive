@@ -5,6 +5,25 @@ sync:
   poll_interval: 30  # seconds between remote checks
   debounce_delay: 2  # seconds to wait after local change
 
+# Files-on-Demand (FUSE) settings
+fuse:
+  # Directory where the virtual filesystem will be mounted
+  mount_point: "~/OneDrive"
+  # Automatically mount when daemon starts
+  auto_mount: true
+  # Directory for caching hydrated file content
+  cache_dir: "~/.local/share/lnxdrive/cache"
+  # Maximum cache size in gigabytes
+  cache_max_size_gb: 10
+  # Percentage of cache size that triggers auto-dehydration (1-100)
+  dehydration_threshold_percent: 80
+  # Maximum days since last access before file is eligible for dehydration
+  dehydration_max_age_days: 30
+  # Interval in minutes between dehydration sweeps
+  dehydration_interval_minutes: 60
+  # Maximum concurrent file downloads
+  hydration_concurrency: 8
+
 rate_limiting:
   delta_requests_per_minute: 10
   upload_concurrent: 4

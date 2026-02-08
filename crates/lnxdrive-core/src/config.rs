@@ -3,8 +3,9 @@
 //! Provides typed configuration structs that map to the YAML configuration file,
 //! with loading, validation, defaults, and a builder pattern for programmatic use.
 
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // T099: Config struct with sub-sections
@@ -19,6 +20,7 @@ pub struct Config {
     pub conflicts: ConflictsConfig,
     pub logging: LoggingConfig,
     pub auth: AuthConfig,
+    pub fuse: FuseConfig,
 }
 
 /// Synchronization settings.
@@ -78,6 +80,27 @@ pub struct LoggingConfig {
 pub struct AuthConfig {
     /// Azure AD Application (client) ID. `None` until the user runs `lnxdrive auth login`.
     pub app_id: Option<String>,
+}
+
+/// Files-on-Demand (FUSE) settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FuseConfig {
+    /// Directory where the FUSE filesystem will be mounted.
+    pub mount_point: String,
+    /// Whether to automatically mount the FUSE filesystem on startup.
+    pub auto_mount: bool,
+    /// Directory for caching hydrated file content.
+    pub cache_dir: String,
+    /// Maximum size of the cache in gigabytes.
+    pub cache_max_size_gb: u32,
+    /// Percentage of cache_max_size_gb that triggers dehydration (0-100).
+    pub dehydration_threshold_percent: u8,
+    /// Maximum age in days before a cached file becomes eligible for dehydration.
+    pub dehydration_max_age_days: u32,
+    /// Interval in minutes between dehydration background tasks.
+    pub dehydration_interval_minutes: u32,
+    /// Number of concurrent file hydration operations allowed.
+    pub hydration_concurrency: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +196,21 @@ impl Default for LoggingConfig {
 
 // AuthConfig derives Default (Option<String> defaults to None).
 // (clippy::derivable_impls)
+
+impl Default for FuseConfig {
+    fn default() -> Self {
+        Self {
+            mount_point: "~/OneDrive".to_string(),
+            auto_mount: true,
+            cache_dir: "~/.local/share/lnxdrive/cache".to_string(),
+            cache_max_size_gb: 10,
+            dehydration_threshold_percent: 80,
+            dehydration_max_age_days: 30,
+            dehydration_interval_minutes: 60,
+            hydration_concurrency: 8,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // T102: Config::validate()
@@ -326,6 +364,34 @@ impl Config {
             });
         }
 
+        // --- fuse ---
+        if self.fuse.cache_max_size_gb == 0 {
+            errors.push(ValidationError {
+                field: "fuse.cache_max_size_gb".into(),
+                message: "must be greater than 0".into(),
+            });
+        }
+        if self.fuse.dehydration_threshold_percent == 0
+            || self.fuse.dehydration_threshold_percent > 100
+        {
+            errors.push(ValidationError {
+                field: "fuse.dehydration_threshold_percent".into(),
+                message: "must be in range 1..=100".into(),
+            });
+        }
+        if self.fuse.hydration_concurrency == 0 || self.fuse.hydration_concurrency > 32 {
+            errors.push(ValidationError {
+                field: "fuse.hydration_concurrency".into(),
+                message: "must be in range 1..=32".into(),
+            });
+        }
+        if self.fuse.dehydration_interval_minutes == 0 {
+            errors.push(ValidationError {
+                field: "fuse.dehydration_interval_minutes".into(),
+                message: "must be greater than 0".into(),
+            });
+        }
+
         errors
     }
 }
@@ -460,6 +526,48 @@ impl ConfigBuilder {
         self
     }
 
+    // --- fuse ---
+
+    pub fn fuse_mount_point(mut self, mount_point: impl Into<String>) -> Self {
+        self.config.fuse.mount_point = mount_point.into();
+        self
+    }
+
+    pub fn fuse_auto_mount(mut self, auto_mount: bool) -> Self {
+        self.config.fuse.auto_mount = auto_mount;
+        self
+    }
+
+    pub fn fuse_cache_dir(mut self, cache_dir: impl Into<String>) -> Self {
+        self.config.fuse.cache_dir = cache_dir.into();
+        self
+    }
+
+    pub fn fuse_cache_max_size_gb(mut self, gb: u32) -> Self {
+        self.config.fuse.cache_max_size_gb = gb;
+        self
+    }
+
+    pub fn fuse_dehydration_threshold_percent(mut self, percent: u8) -> Self {
+        self.config.fuse.dehydration_threshold_percent = percent;
+        self
+    }
+
+    pub fn fuse_dehydration_max_age_days(mut self, days: u32) -> Self {
+        self.config.fuse.dehydration_max_age_days = days;
+        self
+    }
+
+    pub fn fuse_dehydration_interval_minutes(mut self, minutes: u32) -> Self {
+        self.config.fuse.dehydration_interval_minutes = minutes;
+        self
+    }
+
+    pub fn fuse_hydration_concurrency(mut self, concurrency: u8) -> Self {
+        self.config.fuse.hydration_concurrency = concurrency;
+        self
+    }
+
     // --- build ---
 
     /// Consume the builder and return the finished [`Config`].
@@ -492,8 +600,9 @@ impl Default for ConfigBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
+    use super::*;
 
     // -- Defaults --
 
@@ -516,6 +625,14 @@ mod tests {
         assert_eq!(cfg.logging.max_size_mb, 50);
         assert_eq!(cfg.logging.max_files, 5);
         assert!(cfg.auth.app_id.is_none());
+        assert_eq!(cfg.fuse.mount_point, "~/OneDrive");
+        assert!(cfg.fuse.auto_mount);
+        assert_eq!(cfg.fuse.cache_dir, "~/.local/share/lnxdrive/cache");
+        assert_eq!(cfg.fuse.cache_max_size_gb, 10);
+        assert_eq!(cfg.fuse.dehydration_threshold_percent, 80);
+        assert_eq!(cfg.fuse.dehydration_max_age_days, 30);
+        assert_eq!(cfg.fuse.dehydration_interval_minutes, 60);
+        assert_eq!(cfg.fuse.hydration_concurrency, 8);
     }
 
     #[test]
@@ -558,6 +675,15 @@ logging:
   max_files: 3
 auth:
   app_id: "test-app-id-123"
+fuse:
+  mount_point: ~/OneDrive
+  auto_mount: false
+  cache_dir: /tmp/cache
+  cache_max_size_gb: 5
+  dehydration_threshold_percent: 70
+  dehydration_max_age_days: 15
+  dehydration_interval_minutes: 30
+  hydration_concurrency: 4
 "#;
         let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
         tmp.write_all(yaml.as_bytes()).unwrap();
@@ -575,6 +701,14 @@ auth:
         assert_eq!(cfg.logging.level, "debug");
         assert_eq!(cfg.logging.max_files, 3);
         assert_eq!(cfg.auth.app_id, Some("test-app-id-123".to_string()));
+        assert_eq!(cfg.fuse.mount_point, "~/OneDrive");
+        assert!(!cfg.fuse.auto_mount);
+        assert_eq!(cfg.fuse.cache_dir, "/tmp/cache");
+        assert_eq!(cfg.fuse.cache_max_size_gb, 5);
+        assert_eq!(cfg.fuse.dehydration_threshold_percent, 70);
+        assert_eq!(cfg.fuse.dehydration_max_age_days, 15);
+        assert_eq!(cfg.fuse.dehydration_interval_minutes, 30);
+        assert_eq!(cfg.fuse.hydration_concurrency, 4);
     }
 
     #[test]
@@ -783,6 +917,76 @@ auth:
         assert!(errors.len() >= 2);
     }
 
+    #[test]
+    fn validate_catches_zero_fuse_cache_max_size() {
+        let mut cfg = Config::default();
+        cfg.fuse.cache_max_size_gb = 0;
+        let errors = cfg.validate();
+        assert!(errors.iter().any(|e| e.field == "fuse.cache_max_size_gb"));
+    }
+
+    #[test]
+    fn validate_catches_invalid_fuse_dehydration_threshold() {
+        let mut cfg = Config::default();
+        cfg.fuse.dehydration_threshold_percent = 0;
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "fuse.dehydration_threshold_percent"));
+
+        let mut cfg = Config::default();
+        cfg.fuse.dehydration_threshold_percent = 101;
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "fuse.dehydration_threshold_percent"));
+    }
+
+    #[test]
+    fn validate_catches_invalid_fuse_hydration_concurrency() {
+        let mut cfg = Config::default();
+        cfg.fuse.hydration_concurrency = 0;
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "fuse.hydration_concurrency"));
+
+        let mut cfg = Config::default();
+        cfg.fuse.hydration_concurrency = 33;
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "fuse.hydration_concurrency"));
+    }
+
+    #[test]
+    fn validate_catches_zero_fuse_dehydration_interval() {
+        let mut cfg = Config::default();
+        cfg.fuse.dehydration_interval_minutes = 0;
+        let errors = cfg.validate();
+        assert!(errors
+            .iter()
+            .any(|e| e.field == "fuse.dehydration_interval_minutes"));
+    }
+
+    #[test]
+    fn validate_accepts_valid_fuse_values() {
+        let mut cfg = Config::default();
+        cfg.fuse.cache_max_size_gb = 20;
+        cfg.fuse.dehydration_threshold_percent = 50;
+        cfg.fuse.hydration_concurrency = 16;
+        cfg.fuse.dehydration_interval_minutes = 120;
+        let errors = cfg.validate();
+        let fuse_errors: Vec<_> = errors
+            .iter()
+            .filter(|e| e.field.starts_with("fuse."))
+            .collect();
+        assert!(
+            fuse_errors.is_empty(),
+            "unexpected fuse validation errors: {fuse_errors:?}"
+        );
+    }
+
     // -- default_path --
 
     #[test]
@@ -803,5 +1007,94 @@ auth:
             err.to_string(),
             "sync.poll_interval: must be greater than 0"
         );
+    }
+
+    // -- FuseConfig-specific tests (T016) --
+
+    #[test]
+    fn fuse_config_default_returns_expected_values() {
+        let fuse = FuseConfig::default();
+        assert_eq!(fuse.mount_point, "~/OneDrive");
+        assert_eq!(fuse.auto_mount, true);
+        assert_eq!(fuse.cache_dir, "~/.local/share/lnxdrive/cache");
+        assert_eq!(fuse.cache_max_size_gb, 10);
+        assert_eq!(fuse.dehydration_threshold_percent, 80);
+        assert_eq!(fuse.dehydration_max_age_days, 30);
+        assert_eq!(fuse.dehydration_interval_minutes, 60);
+        assert_eq!(fuse.hydration_concurrency, 8);
+    }
+
+    #[test]
+    fn fuse_config_deserializes_from_yaml() {
+        let yaml = r#"
+mount_point: /mnt/onedrive
+auto_mount: false
+cache_dir: /var/cache/lnxdrive
+cache_max_size_gb: 25
+dehydration_threshold_percent: 75
+dehydration_max_age_days: 45
+dehydration_interval_minutes: 90
+hydration_concurrency: 12
+"#;
+        let fuse: FuseConfig = serde_yaml::from_str(yaml).expect("deserialize FuseConfig");
+        assert_eq!(fuse.mount_point, "/mnt/onedrive");
+        assert_eq!(fuse.auto_mount, false);
+        assert_eq!(fuse.cache_dir, "/var/cache/lnxdrive");
+        assert_eq!(fuse.cache_max_size_gb, 25);
+        assert_eq!(fuse.dehydration_threshold_percent, 75);
+        assert_eq!(fuse.dehydration_max_age_days, 45);
+        assert_eq!(fuse.dehydration_interval_minutes, 90);
+        assert_eq!(fuse.hydration_concurrency, 12);
+    }
+
+    #[test]
+    fn full_config_with_fuse_section_loads_correctly() {
+        let yaml = r#"
+sync:
+  root: ~/OneDrive
+  poll_interval: 30
+  debounce_delay: 2
+rate_limiting:
+  delta_requests_per_minute: 10
+  upload_concurrent: 4
+  upload_requests_per_minute: 60
+  download_concurrent: 8
+  metadata_requests_per_minute: 100
+large_files:
+  threshold_mb: 100
+  chunk_size_mb: 10
+  max_concurrent_large: 1
+conflicts:
+  default_strategy: manual
+logging:
+  level: info
+  file: ~/.local/share/lnxdrive/lnxdrive.log
+  max_size_mb: 50
+  max_files: 5
+auth:
+  app_id: null
+fuse:
+  mount_point: ~/OneDrive
+  auto_mount: true
+  cache_dir: ~/.local/share/lnxdrive/cache
+  cache_max_size_gb: 15
+  dehydration_threshold_percent: 85
+  dehydration_max_age_days: 60
+  dehydration_interval_minutes: 120
+  hydration_concurrency: 10
+"#;
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        tmp.write_all(yaml.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let cfg = Config::load(tmp.path()).expect("load config with fuse section");
+        assert_eq!(cfg.fuse.mount_point, "~/OneDrive");
+        assert_eq!(cfg.fuse.auto_mount, true);
+        assert_eq!(cfg.fuse.cache_dir, "~/.local/share/lnxdrive/cache");
+        assert_eq!(cfg.fuse.cache_max_size_gb, 15);
+        assert_eq!(cfg.fuse.dehydration_threshold_percent, 85);
+        assert_eq!(cfg.fuse.dehydration_max_age_days, 60);
+        assert_eq!(cfg.fuse.dehydration_interval_minutes, 120);
+        assert_eq!(cfg.fuse.hydration_concurrency, 10);
     }
 }

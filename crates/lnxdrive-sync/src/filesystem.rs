@@ -17,10 +17,11 @@ use std::io::ErrorKind;
 
 use base64::Engine;
 use chrono::DateTime;
+use lnxdrive_core::{
+    domain::newtypes::{FileHash, SyncPath},
+    ports::local_filesystem::{FileSystemState, ILocalFileSystem, WatchHandle},
+};
 use tracing::{debug, instrument};
-
-use lnxdrive_core::domain::newtypes::{FileHash, SyncPath};
-use lnxdrive_core::ports::local_filesystem::{FileSystemState, ILocalFileSystem, WatchHandle};
 
 // ============================================================================
 // T144: LocalFileSystemAdapter struct
@@ -259,9 +260,11 @@ impl ILocalFileSystem for LocalFileSystemAdapter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
     use tempfile::TempDir;
+
+    use super::*;
 
     /// Helper: create a [`SyncPath`] inside the given temp directory.
     fn sync_path(dir: &TempDir, name: &str) -> SyncPath {

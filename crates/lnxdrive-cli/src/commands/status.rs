@@ -5,12 +5,17 @@
 //! 2. Shows per-file status when a path is given
 //! 3. Lists pending (Modified/Hydrating) items
 //! 4. Lists items in Error state with error details
+//! 5. Shows FUSE filesystem status (mount state, cache usage, file counts)
 
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use clap::Args;
+use lnxdrive_core::config::Config;
 use tracing::info;
 
 use crate::output::{get_formatter, OutputFormat};
@@ -25,8 +30,7 @@ pub struct StatusCommand {
 impl StatusCommand {
     /// T190-T193: Execute the status command
     pub async fn execute(&self, format: OutputFormat) -> Result<()> {
-        use lnxdrive_cache::pool::DatabasePool;
-        use lnxdrive_cache::SqliteStateRepository;
+        use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
         use lnxdrive_core::ports::state_repository::IStateRepository;
 
         let formatter = get_formatter(matches!(format, OutputFormat::Json));
@@ -74,6 +78,7 @@ impl StatusCommand {
     }
 
     /// T190: Display global synchronization status
+    /// T094: Extended with FUSE status section
     async fn show_global_status(
         &self,
         state_repo: &dyn lnxdrive_core::ports::IStateRepository,
@@ -81,8 +86,7 @@ impl StatusCommand {
         format: &OutputFormat,
         formatter: &dyn crate::output::OutputFormatter,
     ) -> Result<()> {
-        use lnxdrive_core::domain::sync_item::ItemState;
-        use lnxdrive_core::ports::state_repository::ItemFilter;
+        use lnxdrive_core::{domain::sync_item::ItemState, ports::state_repository::ItemFilter};
 
         info!(email = %account.email(), "Showing status for account");
 
@@ -93,6 +97,9 @@ impl StatusCommand {
             .context("Failed to count items by state")?;
 
         let total: u64 = counts.values().sum();
+
+        // T094: Get FUSE status
+        let fuse_status = get_fuse_status(&counts);
 
         if matches!(format, OutputFormat::Json) {
             let last_sync_str = account
@@ -105,6 +112,7 @@ impl StatusCommand {
                 "last_sync": last_sync_str,
                 "total_items": total,
                 "items_by_state": counts,
+                "fuse": fuse_status.to_json(),
             });
             formatter.print_json(&json);
             return Ok(());
@@ -197,6 +205,11 @@ impl StatusCommand {
                 formatter.info(&format!("  {} - {}", path_str, reason));
             }
         }
+
+        // T094: Show FUSE status
+        formatter.info("");
+        formatter.info("FUSE:");
+        fuse_status.display_human(formatter);
 
         Ok(())
     }
@@ -334,5 +347,179 @@ fn truncate_path(path: String, max_len: usize) -> String {
         path
     } else {
         format!("...{}", &path[path.len() - (max_len - 3)..])
+    }
+}
+
+// ============================================================================
+// T094: FUSE Status Section
+// ============================================================================
+
+/// FUSE filesystem status information.
+struct FuseStatus {
+    mounted: bool,
+    mount_point: String,
+    cache_used_bytes: u64,
+    cache_max_bytes: u64,
+    files_hydrated: u64,
+    files_pinned: u64,
+    files_online: u64,
+    files_hydrating: u64,
+}
+
+impl FuseStatus {
+    /// Display FUSE status in human-readable format.
+    fn display_human(&self, formatter: &dyn crate::output::OutputFormatter) {
+        // Mount status
+        let mount_status = if self.mounted { "mounted" } else { "not mounted" };
+        formatter.info(&format!("  Mount: {} ({})", self.mount_point, mount_status));
+
+        // Cache usage
+        let cache_percent = if self.cache_max_bytes > 0 {
+            (self.cache_used_bytes as f64 / self.cache_max_bytes as f64 * 100.0) as u8
+        } else {
+            0
+        };
+        formatter.info(&format!(
+            "  Cache: {} / {} ({}%)",
+            format_bytes(self.cache_used_bytes),
+            format_bytes(self.cache_max_bytes),
+            cache_percent
+        ));
+
+        // File counts
+        formatter.info(&format!(
+            "  Files: {} hydrated, {} pinned, {} online-only",
+            self.files_hydrated, self.files_pinned, self.files_online
+        ));
+
+        // Hydrating count (only show if > 0)
+        if self.files_hydrating > 0 {
+            formatter.info(&format!(
+                "  Hydrating: {} file(s) in progress",
+                self.files_hydrating
+            ));
+        }
+    }
+
+    /// Convert to JSON value.
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "mounted": self.mounted,
+            "mount_point": self.mount_point,
+            "cache_used_bytes": self.cache_used_bytes,
+            "cache_max_bytes": self.cache_max_bytes,
+            "files_hydrated": self.files_hydrated,
+            "files_pinned": self.files_pinned,
+            "files_online": self.files_online,
+            "files_hydrating": self.files_hydrating
+        })
+    }
+}
+
+/// Get FUSE status from configuration and state counts.
+fn get_fuse_status(counts: &std::collections::HashMap<String, u64>) -> FuseStatus {
+    // Load configuration
+    let config = Config::load_or_default(&Config::default_path());
+    let fuse_config = &config.fuse;
+
+    // Check if mounted by examining /proc/mounts
+    let mounted = is_fuse_mounted(&fuse_config.mount_point);
+
+    // Calculate cache usage
+    let cache_dir = expand_tilde(&fuse_config.cache_dir);
+    let cache_used_bytes = calculate_directory_size(&cache_dir);
+    let cache_max_bytes = u64::from(fuse_config.cache_max_size_gb) * 1024 * 1024 * 1024;
+
+    // Extract counts by state
+    let files_hydrated = counts.get("Hydrated").copied().unwrap_or(0);
+    let files_pinned = counts.get("Pinned").copied().unwrap_or(0);
+    let files_online = counts.get("Online").copied().unwrap_or(0);
+    let files_hydrating = counts.get("Hydrating").copied().unwrap_or(0);
+
+    FuseStatus {
+        mounted,
+        mount_point: fuse_config.mount_point.clone(),
+        cache_used_bytes,
+        cache_max_bytes,
+        files_hydrated,
+        files_pinned,
+        files_online,
+        files_hydrating,
+    }
+}
+
+/// Check if a path is a FUSE mount point by reading /proc/mounts.
+fn is_fuse_mounted(mount_point: &str) -> bool {
+    let expanded = expand_tilde(mount_point);
+
+    // Try to read /proc/mounts
+    if let Ok(content) = fs::read_to_string("/proc/mounts") {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let mount_path = parts[1];
+                let fs_type = parts[2];
+                // Check if it's our mount point and is a FUSE filesystem
+                if mount_path == expanded && fs_type.starts_with("fuse") {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Calculate the total size of files in a directory recursively.
+fn calculate_directory_size(path: &str) -> u64 {
+    let dir_path = Path::new(path);
+    if !dir_path.exists() {
+        return 0;
+    }
+
+    fn recurse(dir: &Path) -> u64 {
+        let mut size = 0;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Ok(metadata) = fs::metadata(&path) {
+                        size += metadata.len();
+                    }
+                } else if path.is_dir() {
+                    size += recurse(&path);
+                }
+            }
+        }
+        size
+    }
+
+    recurse(dir_path)
+}
+
+/// Expand ~ to home directory.
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return format!("{}{}", home.display(), &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
+/// Format bytes as a human-readable string (e.g., "2.1 GB").
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
     }
 }

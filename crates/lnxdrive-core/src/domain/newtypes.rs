@@ -3,10 +3,12 @@
 //! This module provides strongly-typed wrappers for domain identifiers and values.
 //! Each newtype ensures data validity at construction time.
 
-use std::fmt::{self, Display, Formatter};
-use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
+use std::{
+    fmt::{self, Display, Formatter},
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

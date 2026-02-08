@@ -307,13 +307,11 @@ impl LocalCallbackServer {
     /// The callback parameters (code and state) extracted from the redirect URL
     pub async fn start() -> Result<CallbackParams> {
         use http_body_util::Full;
-        use hyper::body::Bytes;
-        use hyper::server::conn::http1;
-        use hyper::service::service_fn;
-        use hyper::{Request, Response, StatusCode};
+        use hyper::{
+            body::Bytes, server::conn::http1, service::service_fn, Request, Response, StatusCode,
+        };
         use hyper_util::rt::TokioIo;
-        use tokio::net::TcpListener;
-        use tokio::sync::oneshot;
+        use tokio::{net::TcpListener, sync::oneshot};
 
         info!("Starting local OAuth callback server on 127.0.0.1:8400");
 

@@ -4,18 +4,19 @@
 //! delta API for changes since the last sync. Handles delta token management,
 //! converting cloud-side delta items into domain SyncItems.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::json;
 
-use crate::domain::{
-    Account, AccountId, AuditAction, AuditEntry, AuditResult, DeltaToken, FileHash, RemoteId,
-    RemotePath, SyncItem, SyncPath,
+use crate::{
+    domain::{
+        Account, AccountId, AuditAction, AuditEntry, AuditResult, DeltaToken, FileHash, RemoteId,
+        RemotePath, SyncItem, SyncPath,
+    },
+    ports::{DeltaItem, ICloudProvider, IStateRepository},
 };
-use crate::ports::{DeltaItem, ICloudProvider, IStateRepository};
 
 /// Use case for querying incremental changes from the cloud provider
 ///

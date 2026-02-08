@@ -16,9 +16,13 @@
 //! The scheduler also supports user-initiated sync requests that bypass
 //! the debounce window entirely, useful for "sync now" commands.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use tokio::sync::mpsc;
 use tracing::{debug, info};
@@ -205,8 +209,9 @@ impl SyncScheduler {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     #[test]
     fn test_new_creates_scheduler_with_flag() {

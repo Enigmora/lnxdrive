@@ -16,12 +16,10 @@
 //! # }
 //! ```
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
-use lnxdrive_core::domain::newtypes::RemoteId;
-use lnxdrive_core::ports::cloud_provider::UserInfo;
+use lnxdrive_core::{domain::newtypes::RemoteId, ports::cloud_provider::UserInfo};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
@@ -397,6 +395,20 @@ impl GraphClient {
     /// This is useful for upload operations that need to make requests
     /// to absolute URLs (e.g., upload session URLs) rather than relative paths.
     pub(crate) fn http_client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Returns the base URL for API requests
+    ///
+    /// Used when constructing direct API URLs (e.g., for download URLs).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Returns a reference to the underlying reqwest Client
+    ///
+    /// Useful for making direct HTTP requests (e.g., to pre-signed download URLs).
+    pub fn client(&self) -> &Client {
         &self.client
     }
 }

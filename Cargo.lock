@@ -529,6 +529,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "dbus"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1527,12 +1541,15 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
+ "fuser",
  "lnxdrive-cache",
  "lnxdrive-core",
+ "lnxdrive-fuse",
  "lnxdrive-graph",
  "lnxdrive-sync",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1572,6 +1589,7 @@ dependencies = [
  "dirs",
  "lnxdrive-cache",
  "lnxdrive-core",
+ "lnxdrive-fuse",
  "lnxdrive-graph",
  "lnxdrive-ipc",
  "lnxdrive-sync",
@@ -1586,10 +1604,26 @@ dependencies = [
 name = "lnxdrive-fuse"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
+ "dashmap",
+ "dirs",
  "fuser",
+ "libc",
+ "lnxdrive-cache",
+ "lnxdrive-core",
+ "lnxdrive-graph",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1599,6 +1633,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -2372,6 +2407,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2",
  "http",
  "http-body",
@@ -2396,12 +2432,14 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
  "webpki-roots",
 ]
@@ -3584,6 +3622,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f01b580c9ac74c8d8f0c0e4afb04eeef2acf145458e52c03845ee9cd23e3d12"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

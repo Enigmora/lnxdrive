@@ -13,8 +13,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use lnxdrive_core::domain::newtypes::RemotePath;
-use lnxdrive_core::ports::cloud_provider::DeltaItem;
+use lnxdrive_core::{domain::newtypes::RemotePath, ports::cloud_provider::DeltaItem};
 use reqwest::Method;
 use serde::Deserialize;
 use tracing::{debug, info};

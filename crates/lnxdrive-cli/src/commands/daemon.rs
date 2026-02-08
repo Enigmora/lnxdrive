@@ -10,9 +10,10 @@
 //! - `status`  - Show daemon status
 //! - `restart` - Restart the daemon service
 
+use std::process::Command;
+
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use std::process::Command;
 use tracing::info;
 
 use crate::output::{get_formatter, OutputFormat};

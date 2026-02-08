@@ -31,12 +31,13 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use lnxdrive_core::{
+    domain::newtypes::DeltaToken,
+    ports::cloud_provider::{DeltaItem, DeltaResponse},
+};
 use reqwest::{Client, Method};
 use serde::Deserialize;
 use tracing::{debug, warn};
-
-use lnxdrive_core::domain::newtypes::DeltaToken;
-use lnxdrive_core::ports::cloud_provider::{DeltaItem, DeltaResponse};
 
 use crate::client::GraphClient;
 

@@ -9,8 +9,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{AuditEntry, ItemState, SyncItem, SyncPath};
-use crate::ports::IStateRepository;
+use crate::{
+    domain::{AuditEntry, ItemState, SyncItem, SyncPath},
+    ports::IStateRepository,
+};
 
 /// Human-readable explanation of a file's sync state
 ///
@@ -82,6 +84,14 @@ impl Explanation {
             ItemState::Hydrated => (
                 "This file is fully synced. Local and cloud copies match.".to_string(),
                 vec![],
+            ),
+
+            ItemState::Pinned => (
+                "This file is pinned and always kept on this device.".to_string(),
+                vec![
+                    "Pinned files cannot be dehydrated to free up space.".to_string(),
+                    "Use 'lnxdrive unpin <path>' to allow dehydration.".to_string(),
+                ],
             ),
 
             ItemState::Modified => (
@@ -216,9 +226,9 @@ impl ExplainFailureUseCase {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::PathBuf;
 
+    use super::*;
     use crate::domain::{ErrorInfo, RemotePath, SyncItem};
 
     fn test_path() -> SyncPath {
@@ -241,6 +251,10 @@ mod tests {
             ItemState::Hydrated => {
                 item.start_hydrating().unwrap();
                 item.complete_hydration().unwrap();
+            }
+            ItemState::Pinned => {
+                item.start_hydrating().unwrap();
+                item.pin().unwrap();
             }
             ItemState::Modified => {
                 item.start_hydrating().unwrap();

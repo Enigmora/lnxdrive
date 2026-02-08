@@ -11,8 +11,10 @@ use anyhow::{Context, Result};
 use chrono::Duration;
 use serde_json::json;
 
-use crate::domain::{Account, AccountId, AuditAction, AuditEntry, AuditResult, Email, SyncPath};
-use crate::ports::{AuthFlow, ICloudProvider, IStateRepository, Tokens};
+use crate::{
+    domain::{Account, AccountId, AuditAction, AuditEntry, AuditResult, Email, SyncPath},
+    ports::{AuthFlow, ICloudProvider, IStateRepository, Tokens},
+};
 
 /// Default OAuth redirect URI for the desktop application
 const DEFAULT_REDIRECT_URI: &str = "http://localhost:8400";

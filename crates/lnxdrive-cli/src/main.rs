@@ -14,15 +14,20 @@ use tracing_subscriber::EnvFilter;
 mod commands;
 mod output;
 
-use commands::audit::AuditCommand;
-use commands::auth::AuthCommand;
-use commands::completions::CompletionsCommand;
-use commands::config::ConfigCommand;
-use commands::conflicts::ConflictsCommand;
-use commands::daemon::DaemonCommand;
-use commands::explain::ExplainCommand;
-use commands::status::StatusCommand;
-use commands::sync::SyncCommand;
+use commands::{
+    audit::AuditCommand,
+    auth::AuthCommand,
+    completions::CompletionsCommand,
+    config::ConfigCommand,
+    conflicts::ConflictsCommand,
+    daemon::DaemonCommand,
+    explain::ExplainCommand,
+    hydrate::{DehydrateCommand, HydrateCommand},
+    mount::{MountCommand, UnmountCommand},
+    pin::{PinCommand, UnpinCommand},
+    status::StatusCommand,
+    sync::SyncCommand,
+};
 use output::OutputFormat;
 
 #[derive(Debug, Parser)]
@@ -72,6 +77,18 @@ pub enum Commands {
     Conflicts(ConflictsCommand),
     /// Generate shell completions
     Completions(CompletionsCommand),
+    /// Mount the Files-on-Demand FUSE filesystem
+    Mount(MountCommand),
+    /// Unmount the FUSE filesystem
+    Unmount(UnmountCommand),
+    /// Pin files or directories for permanent offline access
+    Pin(PinCommand),
+    /// Unpin files or directories, allowing automatic dehydration
+    Unpin(UnpinCommand),
+    /// Hydrate files to download their content locally
+    Hydrate(HydrateCommand),
+    /// Dehydrate files to free local disk space
+    Dehydrate(DehydrateCommand),
 }
 
 #[tokio::main]
@@ -107,5 +124,11 @@ async fn main() -> Result<()> {
         Commands::Config(cmd) => cmd.execute(format).await,
         Commands::Conflicts(cmd) => cmd.execute(format).await,
         Commands::Completions(cmd) => cmd.execute(format).await,
+        Commands::Mount(cmd) => cmd.execute(format).await,
+        Commands::Unmount(cmd) => cmd.execute(format).await,
+        Commands::Pin(cmd) => cmd.execute(format).await,
+        Commands::Unpin(cmd) => cmd.execute(format).await,
+        Commands::Hydrate(cmd) => cmd.execute(format).await,
+        Commands::Dehydrate(cmd) => cmd.execute(format).await,
     }
 }

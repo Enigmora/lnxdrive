@@ -8,10 +8,11 @@
 //! - Empty delta response
 //! - Mixed item types (files, folders, deleted)
 
-use lnxdrive_graph::client::GraphClient;
-use lnxdrive_graph::delta;
-use wiremock::matchers::{method, path, query_param};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use lnxdrive_graph::{client::GraphClient, delta};
+use wiremock::{
+    matchers::{method, path, query_param},
+    Mock, MockServer, ResponseTemplate,
+};
 
 use crate::common;
 
