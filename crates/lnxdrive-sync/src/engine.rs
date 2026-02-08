@@ -18,6 +18,7 @@ use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use lnxdrive_audit::AuditLogger;
 use lnxdrive_conflict::{ConflictDetector, PolicyEngine};
 use lnxdrive_core::{
     config::Config,
@@ -32,6 +33,7 @@ use lnxdrive_core::{
         state_repository::IStateRepository,
     },
 };
+use lnxdrive_telemetry::MetricsRegistry;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -244,6 +246,10 @@ pub struct SyncEngine {
     bulk_mode: bool,
     /// Conflict policy engine for auto-resolution rules
     policy_engine: PolicyEngine,
+    /// Optional audit logger for recording sync operations
+    audit_logger: Option<Arc<AuditLogger>>,
+    /// Optional Prometheus metrics registry
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl SyncEngine {
@@ -281,7 +287,21 @@ impl SyncEngine {
             watcher_rx: None,
             bulk_mode: false,
             policy_engine,
+            audit_logger: None,
+            metrics: None,
         }
+    }
+
+    /// Sets the audit logger for recording sync operations.
+    pub fn with_audit_logger(mut self, logger: Arc<AuditLogger>) -> Self {
+        self.audit_logger = Some(logger);
+        self
+    }
+
+    /// Sets the Prometheus metrics registry.
+    pub fn with_metrics(mut self, metrics: Arc<MetricsRegistry>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     // ========================================================================
@@ -444,6 +464,11 @@ impl SyncEngine {
             .await
             .context("Failed to save initial sync session")?;
 
+        // Audit: log sync start
+        if let Some(ref audit) = self.audit_logger {
+            audit.log_sync_start(*session.id()).await;
+        }
+
         // Step 3: Query delta (T167/T168/T170: delta token persistence and 410 Gone handling)
         let delta_token = account.delta_token().cloned();
         if let Some(ref token) = delta_token {
@@ -487,6 +512,12 @@ impl SyncEngine {
                 } else {
                     let reason = format!("Failed to query delta: {err}");
                     error!(%reason);
+                    if let Some(ref audit) = self.audit_logger {
+                        audit.log_error(&reason, Some("delta_query")).await;
+                    }
+                    if let Some(ref metrics) = self.metrics {
+                        metrics.record_sync_operation("cycle", "failure");
+                    }
                     session.fail(&reason);
                     self.state_repository.save_session(&session).await.ok();
                     return Err(err.context("Delta query failed"));
@@ -512,17 +543,35 @@ impl SyncEngine {
                     DeltaAction::Downloaded => {
                         result.files_downloaded += 1;
                         items_synced += 1;
+                        if let Some(ref metrics) = self.metrics {
+                            metrics.record_sync_operation("download", "success");
+                            if let Some(size) = delta_item.size {
+                                metrics.record_bytes_transferred("download", size);
+                            }
+                        }
                     }
                     DeltaAction::Deleted => {
                         result.files_deleted += 1;
                         items_synced += 1;
+                        if let Some(ref metrics) = self.metrics {
+                            metrics.record_sync_operation("delete", "success");
+                        }
                     }
                     DeltaAction::Updated => {
                         result.files_downloaded += 1;
                         items_synced += 1;
+                        if let Some(ref metrics) = self.metrics {
+                            metrics.record_sync_operation("download", "success");
+                            if let Some(size) = delta_item.size {
+                                metrics.record_bytes_transferred("download", size);
+                            }
+                        }
                     }
                     DeltaAction::Conflicted => {
                         result.files_conflicted += 1;
+                        if let Some(ref metrics) = self.metrics {
+                            metrics.record_conflict("detected");
+                        }
                     }
                     DeltaAction::Skipped => {}
                 },
@@ -532,6 +581,12 @@ impl SyncEngine {
                         delta_item.name, delta_item.id
                     );
                     warn!(%msg);
+                    if let Some(ref audit) = self.audit_logger {
+                        audit.log_error(&msg, Some("remote_delta")).await;
+                    }
+                    if let Some(ref metrics) = self.metrics {
+                        metrics.record_sync_operation("remote", "failure");
+                    }
                     result.errors.push(msg);
                     session.record_failure();
                     continue;
@@ -563,10 +618,19 @@ impl SyncEngine {
                             result.files_uploaded += 1;
                             items_synced += 1;
                             session.record_success();
+                            if let Some(ref metrics) = self.metrics {
+                                metrics.record_sync_operation("upload", "success");
+                            }
                         }
                         Err(err) => {
                             let msg = format!("Error uploading new file '{}': {err}", path);
                             warn!(%msg);
+                            if let Some(ref audit) = self.audit_logger {
+                                audit.log_error(&msg, Some("local_create")).await;
+                            }
+                            if let Some(ref metrics) = self.metrics {
+                                metrics.record_sync_operation("upload", "failure");
+                            }
                             result.errors.push(msg);
                             session.record_failure();
                         }
@@ -578,10 +642,19 @@ impl SyncEngine {
                             result.files_uploaded += 1;
                             items_synced += 1;
                             session.record_success();
+                            if let Some(ref metrics) = self.metrics {
+                                metrics.record_sync_operation("upload", "success");
+                            }
                         }
                         Err(err) => {
                             let msg = format!("Error uploading modified file '{}': {err}", path);
                             warn!(%msg);
+                            if let Some(ref audit) = self.audit_logger {
+                                audit.log_error(&msg, Some("local_update")).await;
+                            }
+                            if let Some(ref metrics) = self.metrics {
+                                metrics.record_sync_operation("upload", "failure");
+                            }
                             result.errors.push(msg);
                             session.record_failure();
                         }
@@ -592,11 +665,20 @@ impl SyncEngine {
                         result.files_deleted += 1;
                         items_synced += 1;
                         session.record_success();
+                        if let Some(ref metrics) = self.metrics {
+                            metrics.record_sync_operation("delete", "success");
+                        }
                     }
                     Err(err) => {
                         let msg =
                             format!("Error deleting remote item '{}': {err}", item.local_path());
                         warn!(%msg);
+                        if let Some(ref audit) = self.audit_logger {
+                            audit.log_error(&msg, Some("local_delete")).await;
+                        }
+                        if let Some(ref metrics) = self.metrics {
+                            metrics.record_sync_operation("delete", "failure");
+                        }
                         result.errors.push(msg);
                         session.record_failure();
                     }
@@ -661,6 +743,25 @@ impl SyncEngine {
             .context("Failed to save completed session")?;
 
         result.duration_ms = start.elapsed().as_millis() as u64;
+
+        // Audit: log sync complete
+        if let Some(ref audit) = self.audit_logger {
+            audit
+                .log_sync_complete(
+                    *session.id(),
+                    result.duration_ms,
+                    result.files_downloaded,
+                    result.files_uploaded,
+                    result.files_deleted,
+                    result.errors.len(),
+                )
+                .await;
+        }
+
+        // Metrics: record sync cycle
+        if let Some(ref metrics) = self.metrics {
+            metrics.record_sync_operation("cycle", "success");
+        }
 
         info!(
             downloaded = result.files_downloaded,

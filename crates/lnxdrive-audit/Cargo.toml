@@ -7,7 +7,15 @@ license.workspace = true
 description = "Audit and structured logging for LNXDrive"
 
 [dependencies]
+lnxdrive-core.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+lnxdrive-cache.workspace = true

@@ -57,3 +57,24 @@ logging:
 
 auth:
   app_id: null  # Azure App ID (set via lnxdrive auth login --app-id)
+
+# Observability (logging format, audit retention, Prometheus metrics)
+observability:
+  log_format: json    # json | text
+  audit_retention: 30d  # Retention for audit entries (e.g., 30d, 12h, 60m)
+  metrics:
+    enabled: true
+    endpoint: "127.0.0.1:9100"  # Prometheus metrics endpoint (localhost only)
+
+# Telemetry (opt-in crash/error reporting)
+telemetry:
+  enabled: false        # Master switch (off by default)
+  mode: manual          # manual | automatic | ask
+  data:
+    crash_reports: true  # Collect panic backtraces
+    error_reports: false # Collect non-fatal errors
+    usage_stats: false   # Collect anonymized usage stats
+  anonymize:
+    strip_paths: true
+    strip_usernames: true
+    strip_filenames: true

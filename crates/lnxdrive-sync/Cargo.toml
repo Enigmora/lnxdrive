@@ -9,6 +9,8 @@ description = "Delta synchronization engine for LNXDrive"
 [dependencies]
 lnxdrive-core.workspace = true
 lnxdrive-conflict.workspace = true
+lnxdrive-audit.workspace = true
+lnxdrive-telemetry.workspace = true
 notify.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -8,5 +8,6 @@ pub mod explain;
 pub mod hydrate;
 pub mod mount;
 pub mod pin;
+pub mod report;
 pub mod status;
 pub mod sync;

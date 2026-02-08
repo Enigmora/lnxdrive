@@ -15,14 +15,20 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use lnxdrive_audit::AuditLogger;
 use lnxdrive_cache::{pool::DatabasePool, SqliteStateRepository};
-use lnxdrive_core::{config::Config, ports::state_repository::IStateRepository};
+use lnxdrive_core::{
+    config::Config,
+    domain::newtypes::AccountId,
+    ports::state_repository::IStateRepository,
+};
 use lnxdrive_fuse::{mount, unmount, BackgroundSession};
 use lnxdrive_graph::{
     auth::KeyringTokenStorage, client::GraphClient, provider::GraphCloudProvider,
 };
 use lnxdrive_ipc::service::{DaemonState, DaemonSyncState, DbusService, DBUS_NAME};
 use lnxdrive_sync::{engine::SyncEngine, filesystem::LocalFileSystemAdapter};
+use lnxdrive_telemetry::MetricsRegistry;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -49,6 +55,10 @@ struct DaemonService {
     shutdown: CancellationToken,
     /// T095: FUSE session handle (when auto-mounted)
     fuse_session: std::sync::Mutex<Option<BackgroundSession>>,
+    /// Audit logger for recording sync operations
+    audit_logger: Arc<AuditLogger>,
+    /// Prometheus metrics registry
+    metrics: Option<Arc<MetricsRegistry>>,
 }
 
 impl DaemonService {
@@ -79,6 +89,27 @@ impl DaemonService {
 
         let daemon_state = Arc::new(Mutex::new(DaemonState::default()));
 
+        // Create audit logger
+        let audit_logger = Arc::new(AuditLogger::new(
+            Arc::clone(&state_repo) as Arc<dyn IStateRepository>,
+        ));
+
+        // Create Prometheus metrics if enabled
+        let metrics = if config.observability.metrics.enabled {
+            match MetricsRegistry::new() {
+                Ok(registry) => {
+                    info!("Prometheus metrics enabled");
+                    Some(Arc::new(registry))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to create metrics registry, continuing without metrics");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             config,
             state_repo,
@@ -86,6 +117,8 @@ impl DaemonService {
             daemon_state,
             shutdown,
             fuse_session: std::sync::Mutex::new(None),
+            audit_logger,
+            metrics,
         })
     }
 
@@ -104,10 +137,13 @@ impl DaemonService {
         info!("Checking for existing daemon instance...");
 
         // T224: Start D-Bus service (this also acquires the well-known name)
-        let dbus_service = DbusService::new(
+        let mut dbus_service = DbusService::new(
             Arc::clone(&self.daemon_state),
             Arc::clone(&self.state_repo) as Arc<dyn IStateRepository>,
         );
+        if let Some(ref metrics) = self.metrics {
+            dbus_service = dbus_service.with_metrics(Arc::clone(metrics));
+        }
         let _dbus_connection = match dbus_service.start().await {
             Ok(conn) => {
                 info!("D-Bus service started, acquired name {}", DBUS_NAME);
@@ -140,7 +176,7 @@ impl DaemonService {
             .await
             .context("Failed to query default account")?;
 
-        let (_account, tokens) = match account_opt {
+        let (account, tokens) = match account_opt {
             Some(account) => {
                 match KeyringTokenStorage::load(account.email().as_str()) {
                     Ok(Some(t)) => {
@@ -187,13 +223,18 @@ impl DaemonService {
         let cloud_provider = Arc::new(GraphCloudProvider::new(graph_client));
         let local_fs = Arc::new(LocalFileSystemAdapter::new());
 
-        // Create SyncEngine
-        let engine = SyncEngine::new(
+        // Create SyncEngine with audit logger and metrics
+        let mut engine = SyncEngine::new(
             cloud_provider,
             Arc::clone(&self.state_repo) as Arc<dyn IStateRepository + Send + Sync>,
             local_fs,
             &self.config,
-        );
+        )
+        .with_audit_logger(Arc::clone(&self.audit_logger));
+
+        if let Some(ref metrics) = self.metrics {
+            engine = engine.with_metrics(Arc::clone(metrics));
+        }
 
         // T095: Auto-mount FUSE filesystem if enabled
         if self.config.fuse.auto_mount {
@@ -201,7 +242,8 @@ impl DaemonService {
         }
 
         // T216: Enter periodic polling loop
-        let result = self.sync_loop(&engine).await;
+        let account_id = *account.id();
+        let result = self.sync_loop(&engine, &account_id).await;
 
         // T095: Unmount FUSE on shutdown
         self.unmount_fuse();
@@ -275,7 +317,7 @@ impl DaemonService {
     /// Uses `tokio::time::interval` based on `config.sync.poll_interval`
     /// (defaults to 30 seconds). Each tick runs `engine.sync()` unless
     /// the daemon is paused or shutting down.
-    async fn sync_loop(&self, engine: &SyncEngine) -> Result<()> {
+    async fn sync_loop(&self, engine: &SyncEngine, account_id: &AccountId) -> Result<()> {
         let poll_secs = self.config.sync.poll_interval;
         let poll_duration = Duration::from_secs(poll_secs);
 
@@ -349,6 +391,20 @@ impl DaemonService {
                     let mut state = self.daemon_state.lock().await;
                     state.sync_state = DaemonSyncState::Idle;
                     state.last_sync_result = Some(result_json);
+
+                    // T4-056: Update file gauge metrics after each sync cycle
+                    if let Some(ref metrics) = self.metrics {
+                        match self.state_repo.count_items_by_state(account_id).await {
+                            Ok(counts) => {
+                                for (state_name, count) in &counts {
+                                    metrics.set_files_total(state_name, *count as i64);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Failed to update file count metrics");
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     let err_msg = format!("{e:#}");
@@ -469,14 +525,33 @@ async fn shutdown_signal(token: CancellationToken) {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // The log level and format can be configured; env var takes precedence
+    let config_for_tracing = Config::load_or_default(&Config::default_path());
+    let default_level = &config_for_tracing.logging.level;
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(true)
-        .init();
+    if config_for_tracing.observability.log_format == "json" {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .with_target(true)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .with_target(true)
+            .init();
+    }
 
     info!("LNXDrive daemon starting (lnxdrived)");
+
+    // Install crash reporter
+    let reports_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
+        .join("lnxdrive")
+        .join("reports");
+    lnxdrive_telemetry::install_crash_reporter(reports_dir);
 
     // T218: Create cancellation token for propagation to all tasks
     let shutdown_token = CancellationToken::new();
@@ -489,6 +564,20 @@ async fn main() -> Result<()> {
 
     // Create and run the daemon service
     let service = DaemonService::new(shutdown_token.clone()).await?;
+
+    // Start Prometheus metrics server if enabled
+    if let Some(ref metrics) = service.metrics {
+        let server = lnxdrive_telemetry::MetricsServer::new(
+            Arc::clone(metrics),
+            &service.config.observability.metrics.endpoint,
+        )?;
+        let metrics_shutdown = shutdown_token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = server.run(metrics_shutdown).await {
+                error!(error = %e, "Metrics server error");
+            }
+        });
+    }
 
     let result = service.run().await;
 
