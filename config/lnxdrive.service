@@ -1,12 +1,13 @@
 [Unit]
-Description=LNXDrive OneDrive Sync Service
-Documentation=https://github.com/Enigmora/lnxdrive
+Description=LNXDrive - Cloud Storage Daemon
+Documentation=https://github.com/enigmora/lnxdrive
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-ExecStart=%h/.cargo/bin/lnxdrived
+Type=dbus
+BusName=com.enigmora.LNXDrive
+ExecStart=/usr/bin/lnxdrive-daemon
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
@@ -15,7 +16,8 @@ Environment=RUST_LOG=info
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/OneDrive %h/.local/share/lnxdrive %h/.config/lnxdrive
+ReadWritePaths=%h/OneDrive %h/.config/lnxdrive %h/.local/share/lnxdrive
+PrivateTmp=true
 
 [Install]
 WantedBy=default.target
