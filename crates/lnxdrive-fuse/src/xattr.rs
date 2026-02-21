@@ -71,17 +71,23 @@ pub fn list_xattrs() -> Vec<&'static str> {
 /// - `XATTR_STATE` - Always returns the state name as bytes
 /// - `XATTR_SIZE` - Always returns the file size as a decimal string in bytes
 /// - `XATTR_REMOTE_ID` - Returns the OneDrive ID if present, None otherwise
-/// - `XATTR_PROGRESS` - Returns "0" only when state is Hydrating, None otherwise
+/// - `XATTR_PROGRESS` - Returns hydration progress (0-100) when state is Hydrating, None otherwise
+///
+/// # Arguments
+///
+/// * `entry` - The inode entry to read the attribute from
+/// * `name` - The name of the extended attribute to read
+/// * `hydration_progress` - Current hydration progress percentage (0-100), if available
 #[must_use]
-pub fn get_xattr(entry: &InodeEntry, name: &str) -> Option<Vec<u8>> {
+pub fn get_xattr(entry: &InodeEntry, name: &str, hydration_progress: Option<u8>) -> Option<Vec<u8>> {
     match name {
         XATTR_STATE => Some(entry.state().name().as_bytes().to_vec()),
         XATTR_SIZE => Some(entry.size().to_string().as_bytes().to_vec()),
         XATTR_REMOTE_ID => entry.remote_id().map(|r| r.as_str().as_bytes().to_vec()),
         XATTR_PROGRESS => {
-            // Only return progress during hydration
             if matches!(entry.state(), ItemState::Hydrating) {
-                Some(b"0".to_vec()) // Placeholder - will be updated from SyncItem
+                let pct = hydration_progress.unwrap_or(0);
+                Some(pct.to_string().as_bytes().to_vec())
             } else {
                 None
             }
@@ -130,23 +136,23 @@ mod tests {
     #[test]
     fn test_get_xattr_state() {
         let entry = create_test_entry(ItemState::Online, None);
-        let value = get_xattr(&entry, XATTR_STATE);
+        let value = get_xattr(&entry, XATTR_STATE, None);
         assert!(value.is_some());
         assert_eq!(value.unwrap(), b"Online".to_vec());
 
         let entry = create_test_entry(ItemState::Hydrated, None);
-        let value = get_xattr(&entry, XATTR_STATE);
+        let value = get_xattr(&entry, XATTR_STATE, None);
         assert_eq!(value.unwrap(), b"Hydrated".to_vec());
 
         let entry = create_test_entry(ItemState::Hydrating, None);
-        let value = get_xattr(&entry, XATTR_STATE);
+        let value = get_xattr(&entry, XATTR_STATE, None);
         assert_eq!(value.unwrap(), b"Hydrating".to_vec());
     }
 
     #[test]
     fn test_get_xattr_size() {
         let entry = create_test_entry(ItemState::Online, None);
-        let value = get_xattr(&entry, XATTR_SIZE);
+        let value = get_xattr(&entry, XATTR_SIZE, None);
         assert!(value.is_some());
         assert_eq!(value.unwrap(), b"1024".to_vec());
     }
@@ -155,7 +161,7 @@ mod tests {
     fn test_get_xattr_remote_id_present() {
         let remote_id = RemoteId::new("ABC123XYZ".to_string()).unwrap();
         let entry = create_test_entry(ItemState::Hydrated, Some(remote_id));
-        let value = get_xattr(&entry, XATTR_REMOTE_ID);
+        let value = get_xattr(&entry, XATTR_REMOTE_ID, None);
         assert!(value.is_some());
         assert_eq!(value.unwrap(), b"ABC123XYZ".to_vec());
     }
@@ -163,40 +169,46 @@ mod tests {
     #[test]
     fn test_get_xattr_remote_id_absent() {
         let entry = create_test_entry(ItemState::Online, None);
-        let value = get_xattr(&entry, XATTR_REMOTE_ID);
+        let value = get_xattr(&entry, XATTR_REMOTE_ID, None);
         assert!(value.is_none());
     }
 
     #[test]
     fn test_get_xattr_progress_during_hydrating() {
         let entry = create_test_entry(ItemState::Hydrating, None);
-        let value = get_xattr(&entry, XATTR_PROGRESS);
+        // Without progress info, defaults to 0
+        let value = get_xattr(&entry, XATTR_PROGRESS, None);
         assert!(value.is_some());
         assert_eq!(value.unwrap(), b"0".to_vec());
+
+        // With real progress
+        let value = get_xattr(&entry, XATTR_PROGRESS, Some(75));
+        assert!(value.is_some());
+        assert_eq!(value.unwrap(), b"75".to_vec());
     }
 
     #[test]
     fn test_get_xattr_progress_not_hydrating() {
         let entry = create_test_entry(ItemState::Online, None);
-        let value = get_xattr(&entry, XATTR_PROGRESS);
+        let value = get_xattr(&entry, XATTR_PROGRESS, None);
         assert!(value.is_none());
 
         let entry = create_test_entry(ItemState::Hydrated, None);
-        let value = get_xattr(&entry, XATTR_PROGRESS);
+        let value = get_xattr(&entry, XATTR_PROGRESS, Some(100));
         assert!(value.is_none());
 
         let entry = create_test_entry(ItemState::Pinned, None);
-        let value = get_xattr(&entry, XATTR_PROGRESS);
+        let value = get_xattr(&entry, XATTR_PROGRESS, None);
         assert!(value.is_none());
     }
 
     #[test]
     fn test_get_xattr_unknown() {
         let entry = create_test_entry(ItemState::Online, None);
-        let value = get_xattr(&entry, "user.unknown");
+        let value = get_xattr(&entry, "user.unknown", None);
         assert!(value.is_none());
 
-        let value = get_xattr(&entry, "security.selinux");
+        let value = get_xattr(&entry, "security.selinux", None);
         assert!(value.is_none());
     }
 

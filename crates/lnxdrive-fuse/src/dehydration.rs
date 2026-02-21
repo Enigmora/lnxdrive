@@ -177,6 +177,40 @@ impl DehydrationManager {
     pub fn policy(&self) -> &DehydrationPolicy {
         &self.policy
     }
+
+    /// Notify the dehydration manager that a file's last handle was closed.
+    ///
+    /// If the cache is above the dehydration threshold, this will attempt
+    /// to dehydrate the file immediately (if eligible). Otherwise, the file
+    /// will be picked up by the next periodic sweep.
+    ///
+    /// # Arguments
+    ///
+    /// * `ino` - The inode number of the file that was released
+    pub async fn notify_file_closed(&self, ino: u64) {
+        // Check if cache is over threshold
+        let current_usage = match self.cache.disk_usage() {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let threshold = self.policy.threshold_bytes();
+
+        if current_usage > threshold {
+            debug!(
+                ino = ino,
+                usage_mb = current_usage / (1024 * 1024),
+                threshold_mb = threshold / (1024 * 1024),
+                "Cache over threshold, attempting immediate dehydration of released file"
+            );
+            if let Err(e) = self.dehydrate_path(ino).await {
+                debug!(
+                    ino = ino,
+                    error = %e,
+                    "Immediate dehydration skipped for released file"
+                );
+            }
+        }
+    }
 }
 
 // ============================================================================

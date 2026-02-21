@@ -175,7 +175,10 @@ pub fn mount(
     let cache = Arc::new(cache);
 
     // Create LnxDriveFs instance
-    let filesystem = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+    // Note: HydrationManager is None here because mount() does not have a
+    // GraphCloudProvider. The daemon should call LnxDriveFs::set_hydration_manager()
+    // after mounting, or pass it via the constructor when using the full daemon setup.
+    let filesystem = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
     // Configure mount options
     let mount_options = [

@@ -177,7 +177,7 @@ impl MountCommand {
 
         // Step 9: Create the FUSE filesystem
         let rt_handle = tokio::runtime::Handle::current();
-        let fs = LnxDriveFs::new(rt_handle.clone(), pool.clone(), config.fuse.clone(), cache);
+        let fs = LnxDriveFs::new(rt_handle.clone(), pool.clone(), config.fuse.clone(), cache, None);
 
         // Step 10: Mount the filesystem using fuser::spawn_mount2
         formatter.info(&format!("Mounting filesystem at {}", mount_point.display()));

@@ -330,6 +330,33 @@ impl ConflictsInterface {
         state.conflicts_json.clone()
     }
 
+    /// Returns the full JSON details for a single conflict
+    ///
+    /// # Arguments
+    /// * `id` - The conflict's unique identifier (or a prefix of it)
+    ///
+    /// # Returns
+    /// A JSON object string with the conflict details, or `"{}"` if not found.
+    async fn get_details(&self, id: String) -> String {
+        let state = self.state.lock().await;
+        let json_str = &state.conflicts_json;
+
+        // Parse the JSON array and find the matching conflict
+        if let Ok(serde_json::Value::Array(conflicts)) =
+            serde_json::from_str::<serde_json::Value>(json_str)
+        {
+            for conflict in &conflicts {
+                if let Some(cid) = conflict.get("id").and_then(|v| v.as_str()) {
+                    if cid == id || cid.starts_with(&id) {
+                        return conflict.to_string();
+                    }
+                }
+            }
+        }
+
+        "{}".to_string()
+    }
+
     /// Attempts to resolve a conflict with the given strategy
     ///
     /// # Arguments
@@ -355,15 +382,84 @@ impl ConflictsInterface {
             "Conflict resolution requested via D-Bus"
         );
 
-        // Conflict resolution is logged but actual resolution requires
-        // integration with the conflict engine (Phase 10+).
-        // For now, we acknowledge the request.
-        debug!(
-            "Conflict resolution for '{}' with strategy '{}' acknowledged",
-            id, strategy
-        );
-        true
+        // Remove the resolved conflict from the state
+        let mut state = self.state.lock().await;
+        if let Ok(serde_json::Value::Array(mut conflicts)) =
+            serde_json::from_str::<serde_json::Value>(&state.conflicts_json)
+        {
+            let original_len = conflicts.len();
+            conflicts.retain(|c| {
+                c.get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|cid| cid != id && !cid.starts_with(&id))
+                    .unwrap_or(true)
+            });
+            if conflicts.len() < original_len {
+                state.conflicts_json = serde_json::to_string(&conflicts).unwrap_or_default();
+                debug!(
+                    "Conflict '{}' resolved with strategy '{}' and removed from state",
+                    id, strategy
+                );
+                return true;
+            }
+        }
+
+        warn!(conflict_id = %id, "Conflict not found for resolution");
+        false
     }
+
+    /// Resolves all unresolved conflicts with the given strategy
+    ///
+    /// # Arguments
+    /// * `strategy` - Resolution strategy: "keep_local", "keep_remote", or "keep_both"
+    ///
+    /// # Returns
+    /// The number of conflicts that were resolved
+    async fn resolve_all(&self, strategy: String) -> u32 {
+        let valid_strategies = ["keep_local", "keep_remote", "keep_both"];
+        if !valid_strategies.contains(&strategy.as_str()) {
+            warn!(
+                strategy = %strategy,
+                "Invalid conflict resolution strategy for resolve_all"
+            );
+            return 0;
+        }
+
+        let mut state = self.state.lock().await;
+        let count = if let Ok(serde_json::Value::Array(conflicts)) =
+            serde_json::from_str::<serde_json::Value>(&state.conflicts_json)
+        {
+            conflicts.len() as u32
+        } else {
+            0
+        };
+
+        if count > 0 {
+            state.conflicts_json = "[]".to_string();
+            info!(
+                count = count,
+                strategy = %strategy,
+                "All conflicts resolved via D-Bus"
+            );
+        }
+
+        count
+    }
+
+    /// Signal emitted when a new conflict is detected
+    #[zbus(signal)]
+    pub async fn conflict_detected(
+        signal_ctxt: &zbus::SignalContext<'_>,
+        conflict_json: &str,
+    ) -> zbus::Result<()>;
+
+    /// Signal emitted when a conflict is resolved
+    #[zbus(signal)]
+    pub async fn conflict_resolved(
+        signal_ctxt: &zbus::SignalContext<'_>,
+        conflict_id: &str,
+        strategy: &str,
+    ) -> zbus::Result<()>;
 }
 
 // ============================================================================
