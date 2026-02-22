@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=com.enigmora.LNXDrive
+Exec=/usr/bin/lnxdrive-daemon
+SystemdService=lnxdrive.service

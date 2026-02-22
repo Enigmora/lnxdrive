@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LNXDrive
+Comment=Cloud Storage Sync Daemon
+Exec=/usr/bin/lnxdrive-daemon
+Icon=com.enigmora.LNXDrive
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Phase=Applications
+NoDisplay=true

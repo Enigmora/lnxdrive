@@ -485,7 +485,7 @@ impl GraphAuthAdapter {
         let flow = PKCEFlow::new(&self.config)?;
 
         // Step 1: Generate authorization URL with PKCE
-        let (auth_url, _csrf_token, pkce_verifier) = flow.generate_auth_url();
+        let (auth_url, csrf_token, pkce_verifier) = flow.generate_auth_url();
 
         // Step 2: Open the browser
         info!("Opening browser for authentication");
@@ -493,6 +493,15 @@ impl GraphAuthAdapter {
 
         // Step 3: Start local callback server and wait for redirect
         let callback = LocalCallbackServer::start().await?;
+
+        // Step 3.5: Validate CSRF state token to prevent cross-site request forgery
+        if callback.state != csrf_token.secret().as_str() {
+            anyhow::bail!(
+                "OAuth2 CSRF state mismatch: expected '{}', got '{}'",
+                csrf_token.secret(),
+                callback.state
+            );
+        }
 
         // Step 4: Exchange authorization code for tokens
         let tokens = flow.exchange_code(callback.code, pkce_verifier).await?;

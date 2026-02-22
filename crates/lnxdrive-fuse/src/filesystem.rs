@@ -33,6 +33,7 @@ use tracing::{debug, warn};
 use crate::{
     cache::ContentCache,
     dehydration::{DehydrationManager, DehydrationPolicy},
+    hydration::{HydrationManager, HydrationPriority},
     inode::InodeTable,
     inode_entry::{InodeEntry, InodeNumber},
     write_serializer::{WriteSerializer, WriteSerializerHandle},
@@ -99,7 +100,7 @@ const NAME_MAX: usize = 255;
 /// let cache = Arc::new(ContentCache::new("/tmp/cache".into()).unwrap());
 /// let config = FuseConfig::default();
 ///
-/// let fs = LnxDriveFs::new(rt.handle().clone(), pool, config, cache);
+/// let fs = LnxDriveFs::new(rt.handle().clone(), pool, config, cache, None);
 /// // fs can now be passed to fuser::spawn_mount2() or fuser::mount2()
 /// ```
 pub struct LnxDriveFs {
@@ -129,6 +130,9 @@ pub struct LnxDriveFs {
 
     /// Handle to the periodic dehydration sweep task (T086)
     dehydration_task: Option<JoinHandle<()>>,
+
+    /// Manager for on-demand hydration (download) of cloud-only files
+    hydration_manager: Option<Arc<HydrationManager>>,
 }
 
 impl LnxDriveFs {
@@ -153,13 +157,14 @@ impl LnxDriveFs {
     /// # Example
     ///
     /// ```ignore
-    /// let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+    /// let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
     /// ```
     pub fn new(
         rt_handle: Handle,
         db_pool: DatabasePool,
         config: FuseConfig,
         cache: Arc<ContentCache>,
+        hydration_manager: Option<Arc<HydrationManager>>,
     ) -> Self {
         // Create the WriteSerializer for serialized database writes
         let (serializer, write_handle) = WriteSerializer::new(db_pool.clone());
@@ -192,6 +197,7 @@ impl LnxDriveFs {
             next_fh: AtomicU64::new(1),
             dehydration_manager: Some(dehydration_manager),
             dehydration_task: None,
+            hydration_manager,
         }
     }
 
@@ -223,6 +229,11 @@ impl LnxDriveFs {
     /// Returns a reference to the database pool.
     pub fn db_pool(&self) -> &DatabasePool {
         &self.db_pool
+    }
+
+    /// Returns a reference to the hydration manager, if set.
+    pub fn hydration_manager(&self) -> Option<&Arc<HydrationManager>> {
+        self.hydration_manager.as_ref()
     }
 
     /// Allocates a new unique file handle.
@@ -1206,13 +1217,43 @@ impl Filesystem for LnxDriveFs {
         // Determine open flags based on state
         let open_flags = match entry.state() {
             lnxdrive_core::domain::sync_item::ItemState::Online => {
-                // File is a placeholder - hydration would be triggered here
-                // TODO: When HydrationManager is ready, trigger hydration:
-                // self.hydration_manager.hydrate(entry.remote_id(), HydrationPriority::Foreground)
-                debug!(
-                    "open: inode {} is Online (placeholder), hydration would be triggered",
-                    ino
-                );
+                // File is a placeholder - trigger on-demand hydration
+                if let Some(ref hm) = self.hydration_manager {
+                    if let Some(remote_id) = entry.remote_id() {
+                        let hm = Arc::clone(hm);
+                        let item_id = *entry.item_id();
+                        let remote_id = remote_id.clone();
+                        let total_size = entry.size();
+                        debug!(
+                            "open: inode {} is Online, starting hydration (size={})",
+                            ino, total_size
+                        );
+                        // Start hydration asynchronously; read() will wait for data
+                        self.rt_handle.spawn(async move {
+                            if let Err(e) = hm
+                                .hydrate(
+                                    ino,
+                                    item_id,
+                                    remote_id,
+                                    total_size,
+                                    HydrationPriority::UserOpen,
+                                )
+                                .await
+                            {
+                                tracing::error!(
+                                    ino,
+                                    error = %e,
+                                    "Failed to start hydration on open"
+                                );
+                            }
+                        });
+                    }
+                } else {
+                    debug!(
+                        "open: inode {} is Online (placeholder), no hydration manager available",
+                        ino
+                    );
+                }
 
                 // Update last_accessed timestamp asynchronously
                 let item_id = *entry.item_id();
@@ -1228,11 +1269,9 @@ impl Filesystem for LnxDriveFs {
                 0
             }
             lnxdrive_core::domain::sync_item::ItemState::Hydrating => {
-                // File is currently being hydrated
-                // TODO: When HydrationManager is ready, get the existing watch receiver
-                // to wait for hydration completion
+                // File is currently being hydrated - read() will wait for completion
                 debug!(
-                    "open: inode {} is Hydrating, would wait for completion",
+                    "open: inode {} is Hydrating, read() will wait for data",
                     ino
                 );
 
@@ -1371,19 +1410,89 @@ impl Filesystem for LnxDriveFs {
 
         // Handle based on state
         match entry.state() {
-            lnxdrive_core::domain::sync_item::ItemState::Online => {
-                // File is not hydrated - cannot read
-                debug!(
-                    "read: inode {} is Online (not hydrated), returning EIO",
-                    ino
-                );
-                reply.error(libc::EIO);
-            }
-            lnxdrive_core::domain::sync_item::ItemState::Hydrating => {
-                // File is being hydrated - would block until complete when HydrationManager
-                // is integrated. For now, return EIO.
-                debug!("read: inode {} is Hydrating, returning EIO (will wait when HydrationManager is ready)", ino);
-                reply.error(libc::EIO);
+            lnxdrive_core::domain::sync_item::ItemState::Online
+            | lnxdrive_core::domain::sync_item::ItemState::Hydrating => {
+                // File needs hydration - wait for data to become available
+                if let Some(ref hm) = self.hydration_manager {
+                    // Ensure hydration is running (handles race with open())
+                    if !hm.is_hydrating(ino) {
+                        if let Some(remote_id) = entry.remote_id() {
+                            debug!(
+                                "read: inode {} not hydrating yet, starting hydration",
+                                ino
+                            );
+                            match self.rt_handle.block_on(hm.hydrate(
+                                ino,
+                                *entry.item_id(),
+                                remote_id.clone(),
+                                entry.size(),
+                                HydrationPriority::UserOpen,
+                            )) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    warn!(
+                                        "read: failed to start hydration for inode {}: {}",
+                                        ino, e
+                                    );
+                                    reply.error(libc::EIO);
+                                    return;
+                                }
+                            }
+                        } else {
+                            warn!("read: inode {} has no remote_id", ino);
+                            reply.error(libc::EIO);
+                            return;
+                        }
+                    }
+
+                    // Wait for the requested byte range to be available
+                    debug!(
+                        "read: waiting for hydration range ino={} offset={} size={}",
+                        ino, offset, size
+                    );
+                    match self
+                        .rt_handle
+                        .block_on(hm.wait_for_range(ino, offset as u64, size as u64))
+                    {
+                        Ok(()) => {
+                            // Hydration complete for this range - read from cache
+                            let remote_id = match entry.remote_id() {
+                                Some(id) => id.clone(),
+                                None => {
+                                    reply.error(libc::EIO);
+                                    return;
+                                }
+                            };
+                            match self.cache.read(&remote_id, offset as u64, size) {
+                                Ok(data) => {
+                                    debug!(
+                                        "read: successfully read {} bytes from inode {} after hydration",
+                                        data.len(),
+                                        ino
+                                    );
+                                    reply.data(&data);
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "read: cache read failed after hydration for inode {}: {}",
+                                        ino, e
+                                    );
+                                    reply.error(libc::EIO);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("read: hydration wait failed for inode {}: {}", ino, e);
+                            reply.error(libc::EIO);
+                        }
+                    }
+                } else {
+                    debug!(
+                        "read: inode {} is not hydrated and no hydration manager available",
+                        ino
+                    );
+                    reply.error(libc::EIO);
+                }
             }
             lnxdrive_core::domain::sync_item::ItemState::Hydrated
             | lnxdrive_core::domain::sync_item::ItemState::Pinned
@@ -1634,14 +1743,19 @@ impl Filesystem for LnxDriveFs {
                 ino, new_count
             );
 
-            // Log when file becomes eligible for dehydration
+            // Notify DehydrationManager when last handle is closed on a Hydrated file
             if new_count == 0 {
                 if let lnxdrive_core::domain::sync_item::ItemState::Hydrated = entry.state() {
                     debug!(
                         "release: inode {} is now eligible for dehydration (handles=0, state=Hydrated)",
                         ino
                     );
-                    // TODO: Notify DehydrationManager when integrated
+                    if let Some(ref dm) = self.dehydration_manager {
+                        let dm = Arc::clone(dm);
+                        self.rt_handle.spawn(async move {
+                            dm.notify_file_closed(ino).await;
+                        });
+                    }
                 }
             }
         } else {
@@ -2484,8 +2598,14 @@ impl Filesystem for LnxDriveFs {
             }
         };
 
+        // Query real hydration progress if available
+        let hydration_progress = self
+            .hydration_manager
+            .as_ref()
+            .and_then(|hm| hm.progress(ino));
+
         // Get the attribute value using the xattr module
-        let value = match xattr::get_xattr(&entry, name_str) {
+        let value = match xattr::get_xattr(&entry, name_str, hydration_progress) {
             Some(v) => v,
             None => {
                 debug!("getxattr: attribute {} not found for inode {}", name_str, ino);
@@ -2800,7 +2920,7 @@ mod tests {
     async fn test_new_creates_valid_instance() {
         let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
         // Verify the inode table is empty
         assert!(fs.inode_table().is_empty());
@@ -2813,7 +2933,7 @@ mod tests {
     async fn test_alloc_fh_increments() {
         let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
         let fh1 = fs.alloc_fh();
         let fh2 = fs.alloc_fh();
@@ -2830,7 +2950,7 @@ mod tests {
         let expected_mount_point = config.mount_point.clone();
         let expected_cache_dir = config.cache_dir.clone();
 
-        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
         // Test config accessor
         assert_eq!(fs.config().mount_point, expected_mount_point);
@@ -2856,7 +2976,7 @@ mod tests {
     async fn test_write_serializer_is_running() {
         let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+        let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
         // Test that the write serializer is operational by calling increment_inode_counter
         let inode1 = fs.write_handle().increment_inode_counter().await.unwrap();
@@ -2869,7 +2989,7 @@ mod tests {
     async fn test_concurrent_fh_allocation() {
         let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-        let fs = Arc::new(LnxDriveFs::new(rt_handle, db_pool, config, cache));
+        let fs = Arc::new(LnxDriveFs::new(rt_handle, db_pool, config, cache, None));
 
         // Spawn multiple tasks that allocate file handles concurrently
         let mut handles = vec![];
@@ -2994,7 +3114,7 @@ mod tests {
             repo.save_item(&item1).await.unwrap();
             repo.save_item(&item2).await.unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Simulate init()
             simulate_init(&fs).await.unwrap();
@@ -3017,7 +3137,7 @@ mod tests {
         async fn test_init_root_inode_is_1() {
             let (rt_handle, db_pool, config, cache, _repo) = create_test_setup_with_account().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Simulate init()
             simulate_init(&fs).await.unwrap();
@@ -3058,7 +3178,7 @@ mod tests {
             repo.save_item(&item1).await.unwrap();
             repo.save_item(&item2).await.unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Simulate init()
             simulate_init(&fs).await.unwrap();
@@ -3100,7 +3220,7 @@ mod tests {
 
             repo.save_item(&item).await.unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Simulate init() - should assign a new inode since item doesn't have one
             simulate_init(&fs).await.unwrap();
@@ -3133,7 +3253,7 @@ mod tests {
 
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Manually create and insert an entry with a specific inode
             let expected_inode = 42u64;
@@ -3190,7 +3310,7 @@ mod tests {
             repo.save_item(&parent_dir).await.unwrap();
             repo.save_item(&child_file).await.unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Simulate init()
             simulate_init(&fs).await.unwrap();
@@ -3211,7 +3331,7 @@ mod tests {
         async fn test_init_with_empty_database() {
             let (rt_handle, db_pool, config, cache, _repo) = create_test_setup_with_account().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Simulate init() with no items in database
             simulate_init(&fs).await.unwrap();
@@ -3238,7 +3358,7 @@ mod tests {
         async fn test_lookup_returns_correct_entry() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Manually insert root and a test entry
             let root_entry = make_test_entry(1, 1, "", true);
@@ -3262,7 +3382,7 @@ mod tests {
         async fn test_lookup_increments_lookup_count() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert entries
             let root_entry = make_test_entry(1, 1, "", true);
@@ -3289,7 +3409,7 @@ mod tests {
         async fn test_getattr_returns_real_size_for_online_items() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Create an Online (placeholder) item with a specific size
             let expected_size = 1_048_576u64; // 1 MB
@@ -3325,7 +3445,7 @@ mod tests {
         async fn test_lookup_enoent_for_nonexistent_items() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert only root
             let root_entry = make_test_entry(1, 1, "", true);
@@ -3340,7 +3460,7 @@ mod tests {
         async fn test_getattr_enoent_for_nonexistent_inode() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Don't insert any entries
 
@@ -3353,7 +3473,7 @@ mod tests {
         async fn test_lookup_with_wrong_parent() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a directory with a file inside
             let root_entry = make_test_entry(1, 1, "", true);
@@ -3377,7 +3497,7 @@ mod tests {
         async fn test_getattr_returns_correct_attributes() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             let now = SystemTime::now();
             let entry = InodeEntry::new(
@@ -3412,7 +3532,7 @@ mod tests {
         async fn test_getattr_directory_attributes() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             let entry = make_test_entry(50, 1, "mydir", true);
             fs.insert_entry(entry);
@@ -3437,7 +3557,7 @@ mod tests {
         async fn test_readdir_returns_all_children() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Create a directory with multiple children
             let root = make_test_entry(1, 1, "", true);
@@ -3466,7 +3586,7 @@ mod tests {
         async fn test_readdir_empty_directory() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Create an empty directory
             let root = make_test_entry(1, 1, "", true);
@@ -3486,7 +3606,7 @@ mod tests {
         async fn test_readdir_includes_dot_and_dotdot_conceptually() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Create a directory structure
             let root = make_test_entry(1, 1, "", true);
@@ -3517,7 +3637,7 @@ mod tests {
         async fn test_readdir_pagination_simulation() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Create a directory with many children
             let root = make_test_entry(1, 1, "", true);
@@ -3546,7 +3666,7 @@ mod tests {
         async fn test_readdir_nested_directories() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Create nested structure:
             // /
@@ -3588,7 +3708,7 @@ mod tests {
         async fn test_readdir_nonexistent_directory() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Try to get children of a non-existent directory
             let children = fs.get_children(999);
@@ -3599,7 +3719,7 @@ mod tests {
         async fn test_readdir_children_have_correct_parent_ino() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_test_entry(10, 1, "parent_dir", true));
@@ -3623,7 +3743,7 @@ mod tests {
         async fn test_readdir_distinguishes_files_and_directories() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_test_entry(10, 1, "a_file.txt", false));
@@ -3687,7 +3807,7 @@ mod tests {
         async fn test_open_increments_open_handles() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3712,7 +3832,7 @@ mod tests {
         async fn test_open_on_directory_would_return_eisdir() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a directory
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3731,7 +3851,7 @@ mod tests {
         async fn test_open_on_online_file_logs_hydration_needed() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and an Online (placeholder) file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3755,7 +3875,7 @@ mod tests {
         async fn test_open_on_hydrated_file_uses_keep_cache() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3776,7 +3896,7 @@ mod tests {
         async fn test_open_on_nonexistent_inode_would_return_enoent() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Don't insert any entries
 
@@ -3792,7 +3912,7 @@ mod tests {
         async fn test_double_open_increments_handles_twice() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3831,7 +3951,7 @@ mod tests {
             let test_data = b"Hello, LnxDrive! This is cached content.";
             cache.store(&remote_id, test_data).unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache));
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache), None);
 
             // Insert a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3862,7 +3982,7 @@ mod tests {
             let test_data = b"0123456789ABCDEFGHIJ";
             cache.store(&remote_id, test_data).unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache));
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache), None);
 
             // Insert a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3885,7 +4005,7 @@ mod tests {
         async fn test_read_on_online_file_would_return_eio() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert an Online (non-hydrated) file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3905,7 +4025,7 @@ mod tests {
         async fn test_read_on_hydrating_file_would_return_eio() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert a Hydrating file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3931,7 +4051,7 @@ mod tests {
             let test_data = b"Pinned file content";
             cache.store(&remote_id, test_data).unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache));
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache), None);
 
             // Insert a pinned file (should be readable like Hydrated)
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3962,7 +4082,7 @@ mod tests {
             let test_data = b"Modified file content";
             cache.store(&remote_id, test_data).unwrap();
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache));
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, Arc::clone(&cache), None);
 
             // Insert a modified file (should be readable like Hydrated)
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -3988,7 +4108,7 @@ mod tests {
         async fn test_read_on_nonexistent_inode_would_return_enoent() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Don't insert any entries
 
@@ -4008,7 +4128,7 @@ mod tests {
         async fn test_release_decrements_open_handles() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4037,7 +4157,7 @@ mod tests {
         async fn test_release_at_zero_makes_file_eligible_for_dehydration() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4069,7 +4189,7 @@ mod tests {
         async fn test_release_on_nonexistent_inode_logs_warning() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Don't insert any entries
 
@@ -4089,7 +4209,7 @@ mod tests {
         async fn test_alloc_fh_provides_unique_handles() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Allocate multiple file handles
             let fh1 = fs.alloc_fh();
@@ -4112,7 +4232,7 @@ mod tests {
         async fn test_error_state_file_would_return_eio_on_read() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert a file with Error state
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4141,7 +4261,7 @@ mod tests {
         async fn test_multiple_concurrent_opens_share_inode_entry() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = Arc::new(LnxDriveFs::new(rt_handle, db_pool, config, cache));
+            let fs = Arc::new(LnxDriveFs::new(rt_handle, db_pool, config, cache, None));
 
             // Insert root and a hydrated file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4186,7 +4306,7 @@ mod tests {
         async fn test_mkdir_creates_directory_in_root() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert a root directory
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4204,7 +4324,7 @@ mod tests {
         async fn test_mkdir_increments_inode_counter() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Get the initial inode counter value
             let initial_ino = fs.write_handle().increment_inode_counter().await.unwrap();
@@ -4219,7 +4339,7 @@ mod tests {
         async fn test_mkdir_parent_must_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Try to lookup parent 999 (which doesn't exist)
             let parent_entry = fs.get_entry(999);
@@ -4233,7 +4353,7 @@ mod tests {
         async fn test_mkdir_parent_must_be_directory() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert a file (not a directory)
             fs.insert_entry(make_test_entry(1, 1, "", true)); // root dir
@@ -4252,7 +4372,7 @@ mod tests {
         async fn test_mkdir_entry_must_not_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and an existing directory
             fs.insert_entry(make_test_entry(1, 1, "", true)); // root
@@ -4285,7 +4405,7 @@ mod tests {
         async fn test_rmdir_entry_must_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root only
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4302,7 +4422,7 @@ mod tests {
         async fn test_rmdir_entry_must_be_directory() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a file
             fs.insert_entry(make_test_entry(1, 1, "", true)); // root
@@ -4321,7 +4441,7 @@ mod tests {
         async fn test_rmdir_directory_must_be_empty() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root, a subdirectory, and a file inside the subdirectory
             fs.insert_entry(make_test_entry(1, 1, "", true)); // root
@@ -4341,7 +4461,7 @@ mod tests {
         async fn test_rmdir_empty_directory_has_no_children() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and an empty subdirectory
             fs.insert_entry(make_test_entry(1, 1, "", true)); // root
@@ -4356,7 +4476,7 @@ mod tests {
         async fn test_rmdir_removes_entry_from_inode_table() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a directory to remove
             fs.insert_entry(make_test_entry(1, 1, "", true)); // root
@@ -4578,7 +4698,7 @@ mod tests {
         async fn test_create_assigns_new_inode() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4622,7 +4742,7 @@ mod tests {
         async fn test_create_file_has_no_remote_id() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Newly created files don't have a remote_id yet
             let entry = InodeEntry::new(
@@ -4653,7 +4773,7 @@ mod tests {
         async fn test_create_parent_must_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Only insert root
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4670,7 +4790,7 @@ mod tests {
         async fn test_create_parent_must_be_directory() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_entry_with_state(
@@ -4694,7 +4814,7 @@ mod tests {
         async fn test_unlink_removes_from_inode_table() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             // Insert root and a file
             fs.insert_entry(make_test_entry(1, 1, "", true));
@@ -4715,7 +4835,7 @@ mod tests {
         async fn test_unlink_entry_must_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
 
@@ -4731,7 +4851,7 @@ mod tests {
         async fn test_unlink_directory_returns_eisdir() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_test_entry(10, 1, "subdir", true)); // directory
@@ -4763,7 +4883,7 @@ mod tests {
         async fn test_rename_updates_name() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_entry_with_state(
@@ -4783,7 +4903,7 @@ mod tests {
         async fn test_rename_updates_parent_ino() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_test_entry(10, 1, "dir1", true));
@@ -4806,7 +4926,7 @@ mod tests {
         async fn test_rename_source_must_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
 
@@ -4822,7 +4942,7 @@ mod tests {
         async fn test_rename_dest_parent_must_exist() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_entry_with_state(
@@ -4841,7 +4961,7 @@ mod tests {
         async fn test_rename_overwrites_existing_file() {
             let (rt_handle, db_pool, config, cache) = create_test_setup().await;
 
-            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache);
+            let fs = LnxDriveFs::new(rt_handle, db_pool, config, cache, None);
 
             fs.insert_entry(make_test_entry(1, 1, "", true));
             fs.insert_entry(make_entry_with_state(
