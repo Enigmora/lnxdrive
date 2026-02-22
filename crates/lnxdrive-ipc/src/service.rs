@@ -1270,8 +1270,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_conflicts_resolve_valid_strategy() {
-        let state = Arc::new(Mutex::new(DaemonState::default()));
-        let conflicts = ConflictsInterface::new(state);
+        let conflicts_json = serde_json::json!([
+            {"id": "c1", "path": "/file1.txt", "type": "edit"},
+            {"id": "c2", "path": "/file2.txt", "type": "edit"},
+            {"id": "c3", "path": "/file3.txt", "type": "rename"}
+        ])
+        .to_string();
+        let state = Arc::new(Mutex::new(DaemonState {
+            conflicts_json,
+            ..DaemonState::default()
+        }));
+        let conflicts = ConflictsInterface::new(state.clone());
 
         assert!(
             conflicts
@@ -1288,6 +1297,10 @@ mod tests {
                 .resolve("c3".to_string(), "keep_both".to_string())
                 .await
         );
+
+        // Verify all conflicts were removed
+        let final_state = state.lock().await;
+        assert_eq!(final_state.conflicts_json, "[]");
     }
 
     #[tokio::test]
